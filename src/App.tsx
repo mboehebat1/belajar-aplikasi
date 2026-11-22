@@ -1,9 +1,14 @@
 import { useEffect, useState, type FormEvent } from "react";
+import PortalModal, { type PortalTab } from "./components/PortalModal";
+import {
+  ensureSeeded,
+  getCurrentUser,
+  isProActive,
+  type UserAccount,
+} from "./lib/authLicenseStore";
 
 const ORIGIN = "https://zuperfarm.schoolpedia.id";
 const PLAY = (hash: string) => `${ORIGIN}/play.html#${hash}`;
-const LICENSE = "http://lynk.id/alizaenal22/dv1rorojmmj4";
-const WA = "https://wa.me/6282266268008";
 
 const features = [
   { ic: "🌱", t: "Kebun Ilmu", d: <>Cangkul, tanam, lalu "siram" tanaman dengan menjawab soal. Tiga kali benar = panen! Tiap bibit mewakili satu mapel.</> },
@@ -64,12 +69,29 @@ const faqs = [
   ["Bisakah dipakai untuk ulangan / asesmen?", <>Bisa. Pilih jenis Asesmen Harian, PTS, PAS, atau nama asesmen sendiri. Tiap soal hanya dijawab sekali, kunci disembunyikan, dan nilai dihitung otomatis lengkap dengan KKM dan analisis butir soal.</>],
   ["Bagaimana cara membuat soal dengan AI?", <>Buka <b>Buat Soal → ➕ Paket Baru → 🤖 Buat dengan AI</b>. Isi jenjang, kelas, mapel, dan tujuan pembelajaran, pilih bentuk soal, lalu klik tombol ChatGPT, Gemini, atau Claude. Perintahnya otomatis tersalin — tinggal tempel di AI, kirim, salin jawabannya, dan tempel kembali di ZuperFarm. Paket langsung jadi.</>],
   ["Apakah materi bisa berisi video YouTube?", <>Bisa. Tempel link YouTube di materi, dan video diputar langsung di Perpustakaan Desa di dalam game.</>],
-  ["Apakah perlu internet?", <>Mode Gratis tetap bisa dibuka saat sinyal lemah setelah pernah dibuka sekali. Sesi live dan kelas membutuhkan internet. Progres murid di kelas disimpan sementara dan dikirim saat koneksi kembali.</>],
+  ["Bagaimana cara mengaktifkan lisensi Pro?", <>Klik tombol <b>Aktivasi Lisensi</b> di halaman ini, buat atau pilih kode lisensi yang tersedia, lalu masuk/daftar akun guru dan masukkan kode tersebut di Dashboard Akun. Akun langsung aktif sebagai Pro.</>],
 ];
 
 export default function App() {
   const [code, setCode] = useState("");
   const [installEvt, setInstallEvt] = useState<any>(null);
+  const [portalOpen, setPortalOpen] = useState(false);
+  const [portalTab, setPortalTab] = useState<PortalTab>("akun");
+  const [currentUser, setCurrentUser] = useState<UserAccount | null>(null);
+
+  const syncUser = () => {
+    setCurrentUser(getCurrentUser());
+  };
+
+  useEffect(() => {
+    let alive = true;
+    ensureSeeded().then(() => {
+      if (alive) setCurrentUser(getCurrentUser());
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   useEffect(() => {
     const h = (e: Event) => {
@@ -79,6 +101,11 @@ export default function App() {
     window.addEventListener("beforeinstallprompt", h);
     return () => window.removeEventListener("beforeinstallprompt", h);
   }, []);
+
+  const openPortal = (tab: PortalTab) => {
+    setPortalTab(tab);
+    setPortalOpen(true);
+  };
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -98,6 +125,8 @@ export default function App() {
     setInstallEvt(null);
   };
 
+  const proActive = isProActive(currentUser);
+
   return (
     <>
       <nav>
@@ -113,9 +142,24 @@ export default function App() {
             <a href="#harga">Harga</a>
             <a href="#faq">FAQ</a>
           </div>
-          <a className="btn sm w" href={PLAY("guru")} style={{ marginLeft: "auto" }}>
-            👩‍🏫 Masuk Guru
-          </a>
+          <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
+            <button
+              type="button"
+              className="btn sm b"
+              onClick={() => openPortal("lisensi")}
+            >
+              🔑 Lisensi
+            </button>
+            <button
+              type="button"
+              className={`btn sm ${proActive ? "g" : "w"}`}
+              onClick={() => openPortal("akun")}
+            >
+              {currentUser
+                ? `${proActive ? "⭐" : "👤"} ${currentUser.name.split(" ")[0]}`
+                : "👩‍🏫 Masuk Guru"}
+            </button>
+          </div>
         </div>
       </nav>
 
@@ -133,8 +177,24 @@ export default function App() {
             <div className="cta">
               <a className="btn g" href={PLAY("main")}>🎮 Main Sekarang — Gratis</a>
               <a className="btn" href={PLAY("buat")}>✏️ Buat Soal Sendiri</a>
-              <a className="btn b" href="#harga">⭐ Versi Pro</a>
+              <button type="button" className="btn b" onClick={() => openPortal("lisensi")}>
+                ⭐ Lisensi Pro
+              </button>
             </div>
+            {currentUser && (
+              <div className="wood account-banner">
+                <div>
+                  <span className={`badge ${proActive ? "pro" : "free"}`} style={{ marginRight: 8 }}>
+                    {proActive ? "⭐ PRO AKTIF" : "🌱 GRATIS"}
+                  </span>
+                  <b>{currentUser.name}</b>{" "}
+                  <span className="muted">({currentUser.email})</span>
+                </div>
+                <button type="button" className="btn sm w" onClick={() => openPortal("akun")}>
+                  Buka Akun ▸
+                </button>
+              </div>
+            )}
             <form className="join wood" onSubmit={submit}>
               <label>🔑 Punya kode dari guru? Ketik di sini:</label>
               <input
@@ -225,7 +285,7 @@ export default function App() {
         <div className="wrap">
           <h2 className="t">⭐ Gratis untuk mencoba, Pro untuk kelas</h2>
           <p className="sub">
-            Coba semuanya dulu tanpa akun. Saat siap membagikan ke murid dan memakai sesi live, aktifkan lisensi tahunan.
+            Coba semuanya dulu tanpa akun. Saat siap membagikan ke murid dan memakai sesi live, daftar akun guru dan aktifkan kode lisensi Pro langsung di web ini.
           </p>
           <div className="price">
             <div className="plan wood">
@@ -244,25 +304,41 @@ export default function App() {
             <div className="plan wood pro">
               <div className="ribbon">TAHUNAN</div>
               <h3>Pro</h3>
-              <div className="tag">Lisensi 1 tahun · akses penuh</div>
+              <div className="tag">Lisensi 1 tahun · aktivasi instan</div>
               <ul className="chk">
                 {proPlan.map((t, i) => (
                   <li key={i}>{t}</li>
                 ))}
               </ul>
               <div style={{ marginTop: 14, display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <a className="btn g" href={LICENSE} target="_blank" rel="noopener noreferrer">🛒 Beli Lisensi</a>
-                <a className="btn b" href={`${WA}?text=${encodeURIComponent("Halo Admin ZuperFarm, saya ingin tanya tentang lisensi Pro.")}`} target="_blank" rel="noopener noreferrer">💬 Tanya Admin</a>
+                <button type="button" className="btn g" onClick={() => openPortal("lisensi")}>
+                  🔑 Aktivasi / Buat Lisensi
+                </button>
+                <button type="button" className="btn b" onClick={() => openPortal("akun")}>
+                  👩‍🏫 Akun Guru
+                </button>
               </div>
             </div>
           </div>
 
           <h3 className="px" style={{ textAlign: "center", fontSize: 24, marginTop: 34 }}>Cara aktivasi Pro</h3>
           <div className="steps">
-            <div className="wood"><b>Beli lisensi</b><br />melalui <a href={LICENSE} target="_blank" rel="noopener noreferrer">link pembelian</a>.</div>
-            <div className="wood"><b>Daftar akun guru</b><br />di <a href={PLAY("guru")}>halaman guru</a> (email &amp; password).</div>
-            <div className="wood"><b>Konfirmasi via WhatsApp</b><br />ke admin <a href={WA} target="_blank" rel="noopener noreferrer">0822-6626-8008</a>.</div>
-            <div className="wood"><b>Akun diaktifkan</b><br />semua fitur Pro terbuka selama 1 tahun.</div>
+            <div className="wood">
+              <b>Buat / Ambil lisensi</b><br />
+              melalui <button type="button" className="link-btn" onClick={() => openPortal("lisensi")}>halaman lisensi</button>.
+            </div>
+            <div className="wood">
+              <b>Daftar akun guru</b><br />
+              di <button type="button" className="link-btn" onClick={() => openPortal("akun")}>portal akun guru</button> (email &amp; password).
+            </div>
+            <div className="wood">
+              <b>Masukkan kode lisensi</b><br />
+              di Dashboard Akun Anda atau kelola via <button type="button" className="link-btn" onClick={() => openPortal("admin")}>Panel Admin</button>.
+            </div>
+            <div className="wood">
+              <b>Akun langsung aktif</b><br />
+              semua fitur Pro terbuka &amp; bukti lisensi bisa diunduh.
+            </div>
           </div>
         </div>
       </section>
@@ -301,17 +377,41 @@ export default function App() {
             Zuper<span>Farm</span>
           </div>
           <p>Bagian dari ekosistem <b>Zuper Guru</b> · Dibuat untuk guru dan murid Indonesia 🇮🇩</p>
-          <p>
-            <a href={WA} target="_blank" rel="noopener noreferrer">💬 WhatsApp Admin 0822-6626-8008</a> ·{" "}
-            <a href={LICENSE} target="_blank" rel="noopener noreferrer">🛒 Beli Lisensi</a> ·{" "}
-            <a href={PLAY("guru")}>👩‍🏫 Masuk Guru</a>
+          <p className="footer-actions">
+            <button type="button" className="footer-link" onClick={() => openPortal("akun")}>
+              👩‍🏫 Portal Akun Guru
+            </button>{" "}
+            ·{" "}
+            <button type="button" className="footer-link" onClick={() => openPortal("lisensi")}>
+              🔑 Aktivasi Lisensi
+            </button>{" "}
+            ·{" "}
+            <button type="button" className="footer-link" onClick={() => openPortal("admin")}>
+              👑 Panel Admin Lisensi
+            </button>
           </p>
         </div>
       </footer>
 
-      <a className="wa" href={`${WA}?text=${encodeURIComponent("Halo Admin ZuperFarm")}`} target="_blank" rel="noopener noreferrer">
-        💬 Tanya Admin
-      </a>
+      <button
+        type="button"
+        className="wa"
+        onClick={() => openPortal(currentUser ? "akun" : "lisensi")}
+      >
+        {currentUser
+          ? proActive
+            ? "⭐ Akun Pro Aktif"
+            : "🔑 Aktivasi Pro"
+          : "🔑 Akun & Lisensi"}
+      </button>
+
+      <PortalModal
+        open={portalOpen}
+        initialTab={portalTab}
+        user={currentUser}
+        onClose={() => setPortalOpen(false)}
+        onAuthChange={syncUser}
+      />
     </>
   );
 }
