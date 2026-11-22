@@ -6,6 +6,7 @@ import {
   type ApiRequest,
   type ApiResponse,
 } from "./_lib/http.js";
+import type { Pool } from "pg";
 
 const PACKAGES: Record<string, { name: string; prefix: string; days: number }> = {
   trial: { name: "Trial Pro (30 Hari)", prefix: "TRL", days: 30 },
@@ -25,9 +26,15 @@ function mapUser(r: Record<string, unknown>) {
     salt: "",
     plan: String(r.plan) as "free" | "pro",
     licenseKey: r.license_key ? String(r.license_key) : null,
-    licenseActivatedAt: r.license_activated_at ? new Date(String(r.license_activated_at)).toISOString() : null,
-    licenseExpiresAt: r.license_expires_at ? new Date(String(r.license_expires_at)).toISOString() : null,
-    createdAt: r.created_at ? new Date(String(r.created_at)).toISOString() : new Date().toISOString(),
+    licenseActivatedAt: r.license_activated_at
+      ? new Date(String(r.license_activated_at)).toISOString()
+      : null,
+    licenseExpiresAt: r.license_expires_at
+      ? new Date(String(r.license_expires_at)).toISOString()
+      : null,
+    createdAt: r.created_at
+      ? new Date(String(r.created_at)).toISOString()
+      : new Date().toISOString(),
   };
 }
 
@@ -37,13 +44,43 @@ function mapLicense(r: Record<string, unknown>) {
     planName: String(r.plan_name),
     durationDays: Number(r.duration_days),
     status: String(r.status) as "available" | "active" | "revoked",
-    createdAt: r.created_at ? new Date(String(r.created_at)).toISOString() : new Date().toISOString(),
+    createdAt: r.created_at
+      ? new Date(String(r.created_at)).toISOString()
+      : new Date().toISOString(),
     createdBy: String(r.created_by),
     note: String(r.note ?? ""),
     activatedByEmail: r.activated_by_email ? String(r.activated_by_email) : null,
     activatedAt: r.activated_at ? new Date(String(r.activated_at)).toISOString() : null,
     expiresAt: r.expires_at ? new Date(String(r.expires_at)).toISOString() : null,
   };
+}
+
+function mapLicenseRequest(r: Record<string, unknown>) {
+  return {
+    id: String(r.id),
+    userEmail: String(r.user_email),
+    userName: String(r.user_name),
+    institution: String(r.institution ?? ""),
+    packageId: String(r.package_id),
+    packageName: String(r.package_name),
+    durationDays: Number(r.duration_days),
+    note: String(r.note ?? ""),
+    status: String(r.status) as "pending" | "approved" | "rejected",
+    adminNote: String(r.admin_note ?? ""),
+    approvedLicenseKey: r.approved_license_key ? String(r.approved_license_key) : null,
+    reviewedBy: r.reviewed_by ? String(r.reviewed_by) : null,
+    reviewedAt: r.reviewed_at ? new Date(String(r.reviewed_at)).toISOString() : null,
+    createdAt: r.created_at
+      ? new Date(String(r.created_at)).toISOString()
+      : new Date().toISOString(),
+  };
+}
+
+async function verifyAdmin(pool: Pool, adminEmail: string): Promise<boolean> {
+  const email = adminEmail.trim().toLowerCase();
+  if (!email) return false;
+  const { rows } = await pool.query("SELECT role FROM zf_users WHERE email = $1", [email]);
+  return rows.length > 0 && rows[0].role === "admin";
 }
 
 export default async function handler(req: ApiRequest, res: ApiResponse) {
@@ -64,7 +101,10 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       const password = String(body.password ?? "");
       const { rows } = await pool.query("SELECT * FROM zf_users WHERE email = $1", [email]);
       if (rows.length === 0) {
-        sendJson(res, 200, { ok: false, error: "Email belum terdaftar. Silakan daftar akun baru terlebih dahulu." });
+        sendJson(res, 200, {
+          ok: false,
+          error: "Email belum terdaftar. Silakan daftar akun baru terlebih dahulu.",
+        });
         return;
       }
       const userRow = rows[0];
@@ -82,7 +122,13 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       const email = String(body.email ?? "").trim().toLowerCase();
       const institution = String(body.institution ?? "").trim() || "Sekolah / Umum";
       const password = String(body.password ?? "");
-      const role = body.role === "admin" ? "admin" : "guru";
+      let role: "admin" | "guru" = "guru";
+      if (body.role === "admin") {
+        const requester = String(body.adminEmail ?? "");
+        if (await verifyAdmin(pool, requester)) {
+          role = "admin";
+        }
+      }
 
       if (name.length < 2) {
         sendJson(res, 200, { ok: false, error: "Nama lengkap minimal 2 karakter." });
@@ -148,35 +194,55 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       return;
     }
 
-    if (action === "list_available_licenses") {
-      const { rows } = await pool.query(
-        `SELECT * FROM zf_licenses WHERE status = 'available' ORDER BY created_at DESC LIMIT 20`
+    // ==================== LICENSE REQUESTS (APPROVAL FLOW) ====================
+
+    if (action === "submit_license_request") {
+      const email = String(body.email ?? "").trim().toLowerCase();
+      const packageId = String(body.packageId ?? "yearly");
+      const note = String(body.note ?? "").trim().slice(0, 300);
+      const pkg = PACKAGES[packageId] ?? PACKAGES.yearly;
+
+      const uRes = await pool.query("SELECT * FROM zf_users WHERE email = $1", [email]);
+      if (uRes.rows.length === 0) {
+        sendJson(res, 200, { ok: false, error: "Silakan masuk akun guru terlebih dahulu." });
+        return;
+      }
+
+      const pendingRes = await pool.query(
+        `SELECT 1 FROM zf_license_requests WHERE user_email = $1 AND status = 'pending'`,
+        [email]
       );
-      sendJson(res, 200, { ok: true, licenses: rows.map(mapLicense) });
+      if (pendingRes.rows.length > 0) {
+        sendJson(res, 200, {
+          ok: false,
+          error: "Anda masih memiliki pengajuan lisensi yang menunggu persetujuan Admin.",
+        });
+        return;
+      }
+
+      const u = uRes.rows[0];
+      const id = `req_${Date.now().toString(36)}_${randomCode(4).toLowerCase()}`;
+      const { rows } = await pool.query(
+        `INSERT INTO zf_license_requests (id, user_email, user_name, institution, package_id, package_name, duration_days, note, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending')
+         RETURNING *`,
+        [id, email, String(u.name), String(u.institution ?? ""), packageId, pkg.name, pkg.days, note]
+      );
+      sendJson(res, 200, { ok: true, request: mapLicenseRequest(rows[0]) });
       return;
     }
 
-    if (action === "claim_license" || action === "admin_generate_licenses") {
-      const pkgId = String(body.packageId ?? "yearly");
-      const pkg = PACKAGES[pkgId] ?? PACKAGES.yearly;
-      const count = Math.min(20, Math.max(1, Number(body.count ?? 1) || 1));
-      const note = String(body.note ?? "").trim() || "Dibuat melalui aplikasi";
-      const createdBy = String(body.createdBy ?? "self-service");
-      const year = new Date().getFullYear();
-
-      const created = [];
-      for (let i = 0; i < count; i++) {
-        const key = `ZFARM-${pkg.prefix}-${year}-${randomCode(4)}`;
-        const { rows } = await pool.query(
-          `INSERT INTO zf_licenses (key, plan_name, duration_days, status, created_by, note)
-           VALUES ($1, $2, $3, 'available', $4, $5)
-           ON CONFLICT (key) DO NOTHING
-           RETURNING *`,
-          [key, pkg.name, pkg.days, createdBy, note]
-        );
-        if (rows[0]) created.push(mapLicense(rows[0]));
+    if (action === "my_license_requests") {
+      const email = String(body.email ?? "").trim().toLowerCase();
+      if (!email) {
+        sendJson(res, 200, { ok: true, requests: [] });
+        return;
       }
-      sendJson(res, 200, { ok: true, licenses: created });
+      const { rows } = await pool.query(
+        `SELECT * FROM zf_license_requests WHERE user_email = $1 ORDER BY created_at DESC LIMIT 20`,
+        [email]
+      );
+      sendJson(res, 200, { ok: true, requests: rows.map(mapLicenseRequest) });
       return;
     }
 
@@ -184,7 +250,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       const email = String(body.email ?? "").trim().toLowerCase();
       const key = String(body.licenseKey ?? "").trim().toUpperCase().replace(/\s+/g, "");
       if (!key) {
-        sendJson(res, 200, { ok: false, error: "Masukkan kode lisensi terlebih dahulu." });
+        sendJson(res, 200, { ok: false, error: "Masukkan kode lisensi resmi dari Admin." });
         return;
       }
       const userRes = await pool.query("SELECT * FROM zf_users WHERE email = $1", [email]);
@@ -194,12 +260,12 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       }
       const licRes = await pool.query("SELECT * FROM zf_licenses WHERE key = $1", [key]);
       if (licRes.rows.length === 0) {
-        sendJson(res, 200, { ok: false, error: `Kode lisensi "${key}" tidak ditemukan.` });
+        sendJson(res, 200, { ok: false, error: `Kode lisensi "${key}" tidak valid atau belum diterbitkan Admin.` });
         return;
       }
       const lic = licRes.rows[0];
       if (lic.status === "revoked") {
-        sendJson(res, 200, { ok: false, error: "Kode lisensi ini telah dicabut." });
+        sendJson(res, 200, { ok: false, error: "Kode lisensi ini telah dicabut oleh Admin." });
         return;
       }
       if (lic.status === "active" && lic.activated_by_email !== email) {
@@ -241,16 +307,133 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       return;
     }
 
+    // ==================== ADMIN-ONLY ACTIONS ====================
+
+    const adminEmail = String(body.adminEmail ?? body.createdBy ?? "").trim().toLowerCase();
+    if (!(await verifyAdmin(pool, adminEmail))) {
+      sendJson(res, 403, { ok: false, error: "Akses ditolak: hanya Admin yang berwenang." });
+      return;
+    }
+
     if (action === "admin_data") {
-      const [uRes, lRes] = await Promise.all([
+      const [uRes, lRes, rRes] = await Promise.all([
         pool.query("SELECT * FROM zf_users ORDER BY created_at DESC"),
         pool.query("SELECT * FROM zf_licenses ORDER BY created_at DESC"),
+        pool.query(
+          `SELECT * FROM zf_license_requests
+           ORDER BY CASE WHEN status = 'pending' THEN 0 ELSE 1 END, created_at DESC`
+        ),
       ]);
       sendJson(res, 200, {
         ok: true,
         users: uRes.rows.map(mapUser),
         licenses: lRes.rows.map(mapLicense),
+        requests: rRes.rows.map(mapLicenseRequest),
       });
+      return;
+    }
+
+    if (action === "admin_approve_request") {
+      const requestId = String(body.requestId ?? "");
+      const adminNote = String(body.adminNote ?? "").trim().slice(0, 250);
+      const reqRes = await pool.query("SELECT * FROM zf_license_requests WHERE id = $1", [
+        requestId,
+      ]);
+      if (reqRes.rows.length === 0) {
+        sendJson(res, 200, { ok: false, error: "Permintaan lisensi tidak ditemukan." });
+        return;
+      }
+      const reqRow = reqRes.rows[0];
+      if (reqRow.status !== "pending") {
+        sendJson(res, 200, { ok: false, error: "Permintaan ini sudah diproses sebelumnya." });
+        return;
+      }
+
+      const pkg = PACKAGES[String(reqRow.package_id)] ?? PACKAGES.yearly;
+      const year = new Date().getFullYear();
+      const key = `ZFARM-${pkg.prefix}-${year}-${randomCode(4)}`;
+      const now = new Date();
+      const targetEmail = String(reqRow.user_email);
+
+      const uRes = await pool.query("SELECT * FROM zf_users WHERE email = $1", [targetEmail]);
+      const currentExp = uRes.rows[0]?.license_expires_at
+        ? new Date(String(uRes.rows[0].license_expires_at))
+        : null;
+      const baseDate = currentExp && currentExp.getTime() > now.getTime() ? currentExp : now;
+      const expiresAt = new Date(baseDate.getTime() + Number(reqRow.duration_days) * 86400 * 1000);
+
+      await pool.query(
+        `INSERT INTO zf_licenses (key, plan_name, duration_days, status, created_by, note, activated_by_email, activated_at, expires_at)
+         VALUES ($1, $2, $3, 'active', $4, $5, $6, $7, $8)`,
+        [
+          key,
+          String(reqRow.package_name),
+          Number(reqRow.duration_days),
+          adminEmail,
+          `Disetujui Admin dari permintaan #${requestId}`,
+          targetEmail,
+          now.toISOString(),
+          expiresAt.toISOString(),
+        ]
+      );
+
+      await pool.query(
+        `UPDATE zf_users
+         SET plan = 'pro', license_key = $1, license_activated_at = $2, license_expires_at = $3
+         WHERE email = $4`,
+        [key, now.toISOString(), expiresAt.toISOString(), targetEmail]
+      );
+
+      const updReq = await pool.query(
+        `UPDATE zf_license_requests
+         SET status = 'approved', admin_note = $1, approved_license_key = $2, reviewed_by = $3, reviewed_at = $4
+         WHERE id = $5
+         RETURNING *`,
+        [adminNote || "Disetujui oleh Admin", key, adminEmail, now.toISOString(), requestId]
+      );
+
+      sendJson(res, 200, { ok: true, request: mapLicenseRequest(updReq.rows[0]), licenseKey: key });
+      return;
+    }
+
+    if (action === "admin_reject_request") {
+      const requestId = String(body.requestId ?? "");
+      const adminNote = String(body.adminNote ?? "").trim().slice(0, 250) || "Ditolak oleh Admin";
+      const updReq = await pool.query(
+        `UPDATE zf_license_requests
+         SET status = 'rejected', admin_note = $1, reviewed_by = $2, reviewed_at = NOW()
+         WHERE id = $3 AND status = 'pending'
+         RETURNING *`,
+        [adminNote, adminEmail, requestId]
+      );
+      if (updReq.rows.length === 0) {
+        sendJson(res, 200, { ok: false, error: "Permintaan tidak ditemukan atau sudah diproses." });
+        return;
+      }
+      sendJson(res, 200, { ok: true, request: mapLicenseRequest(updReq.rows[0]) });
+      return;
+    }
+
+    if (action === "admin_generate_licenses") {
+      const pkgId = String(body.packageId ?? "yearly");
+      const pkg = PACKAGES[pkgId] ?? PACKAGES.yearly;
+      const count = Math.min(20, Math.max(1, Number(body.count ?? 1) || 1));
+      const note = String(body.note ?? "").trim() || "Dibuat oleh Admin";
+      const year = new Date().getFullYear();
+
+      const created = [];
+      for (let i = 0; i < count; i++) {
+        const key = `ZFARM-${pkg.prefix}-${year}-${randomCode(4)}`;
+        const { rows } = await pool.query(
+          `INSERT INTO zf_licenses (key, plan_name, duration_days, status, created_by, note)
+           VALUES ($1, $2, $3, 'available', $4, $5)
+           ON CONFLICT (key) DO NOTHING
+           RETURNING *`,
+          [key, pkg.name, pkg.days, adminEmail, note]
+        );
+        if (rows[0]) created.push(mapLicense(rows[0]));
+      }
+      sendJson(res, 200, { ok: true, licenses: created });
       return;
     }
 
@@ -283,7 +466,6 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
 
     if (action === "admin_assign_pro") {
       const targetEmail = String(body.targetEmail ?? "").trim().toLowerCase();
-      const adminEmail = String(body.adminEmail ?? "admin@zuperfarm.local");
       const pkg = PACKAGES[String(body.packageId ?? "yearly")] ?? PACKAGES.yearly;
       const year = new Date().getFullYear();
       const key = `ZFARM-${pkg.prefix}-${year}-${randomCode(4)}`;

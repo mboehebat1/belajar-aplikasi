@@ -270,6 +270,23 @@ export async function ensureSchema(): Promise<Pool> {
           expires_at TIMESTAMPTZ
         );
 
+        CREATE TABLE IF NOT EXISTS zf_license_requests (
+          id TEXT PRIMARY KEY,
+          user_email TEXT NOT NULL,
+          user_name TEXT NOT NULL,
+          institution TEXT NOT NULL DEFAULT '',
+          package_id TEXT NOT NULL,
+          package_name TEXT NOT NULL,
+          duration_days INTEGER NOT NULL,
+          note TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'pending',
+          admin_note TEXT NOT NULL DEFAULT '',
+          approved_license_key TEXT,
+          reviewed_by TEXT,
+          reviewed_at TIMESTAMPTZ,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
         CREATE TABLE IF NOT EXISTS zf_classes (
           id TEXT PRIMARY KEY,
           owner_email TEXT NOT NULL,
@@ -333,9 +350,11 @@ export async function ensureSchema(): Promise<Pool> {
         CREATE INDEX IF NOT EXISTS idx_zf_sessions_owner ON zf_sessions(owner_email);
         CREATE INDEX IF NOT EXISTS idx_zf_classes_owner ON zf_classes(owner_email);
         CREATE INDEX IF NOT EXISTS idx_zf_packs_owner ON zf_packs(owner_email);
+        CREATE INDEX IF NOT EXISTS idx_zf_lic_req_email ON zf_license_requests(user_email);
+        CREATE INDEX IF NOT EXISTS idx_zf_lic_req_status ON zf_license_requests(status);
       `);
 
-      // Seed default accounts if empty
+      // Seed default admin account if empty
       const { rows: userCountRows } = await pool.query<{ n: string }>(
         "SELECT COUNT(*)::text AS n FROM zf_users"
       );
@@ -343,27 +362,20 @@ export async function ensureSchema(): Promise<Pool> {
         const now = new Date();
         const adminExp = new Date(now.getTime() + 3650 * 86400 * 1000);
         const adminSalt = "seed_admin_salt_2026";
-        const guruSalt = "seed_guru_salt_2026";
         const adminHash = sha256Password("admin123", adminSalt);
-        const guruHash = sha256Password("guru123", guruSalt);
 
         await pool.query(
           `INSERT INTO zf_users (id, name, email, institution, role, password_hash, salt, plan, license_key, license_activated_at, license_expires_at)
            VALUES
-             ('usr_admin_default', 'Admin ZuperFarm', 'admin@zuperfarm.local', 'ZuperFarm Indonesia', 'admin', $1, $2, 'pro', 'ZFARM-PRO-ADMIN-0001', $3, $4),
-             ('usr_guru_demo', 'Budi Santoso, S.Pd.', 'guru@zuperfarm.local', 'SDN Nusantara 01', 'guru', $5, $6, 'free', NULL, NULL, NULL)
+             ('usr_admin_default', 'Admin ZuperFarm', 'admin@zuperfarm.local', 'ZuperFarm Indonesia', 'admin', $1, $2, 'pro', 'ZFARM-PRO-ADMIN-0001', $3, $4)
            ON CONFLICT (email) DO NOTHING`,
-          [adminHash, adminSalt, now.toISOString(), adminExp.toISOString(), guruHash, guruSalt]
+          [adminHash, adminSalt, now.toISOString(), adminExp.toISOString()]
         );
 
         await pool.query(
           `INSERT INTO zf_licenses (key, plan_name, duration_days, status, created_by, note, activated_by_email, activated_at, expires_at)
            VALUES
-             ('ZFARM-PRO-ADMIN-0001', 'Lisensi Admin (10 Tahun)', 3650, 'active', 'admin@zuperfarm.local', 'Akun Administrator Utama', 'admin@zuperfarm.local', $1, $2),
-             ('ZFARM-PRO-2026-8801', 'Pro Tahunan (1 Tahun)', 365, 'available', 'admin@zuperfarm.local', 'Kode lisensi siap pakai #1', NULL, NULL, NULL),
-             ('ZFARM-PRO-2026-8802', 'Pro Tahunan (1 Tahun)', 365, 'available', 'admin@zuperfarm.local', 'Kode lisensi siap pakai #2', NULL, NULL, NULL),
-             ('ZFARM-TRL-2026-0030', 'Trial Pro (30 Hari)', 30, 'available', 'admin@zuperfarm.local', 'Kode uji coba 30 hari', NULL, NULL, NULL),
-             ('ZFARM-SCH-2026-9901', 'Pro Sekolah (2 Tahun)', 730, 'available', 'admin@zuperfarm.local', 'Kode lisensi sekolah 2 tahun', NULL, NULL, NULL)
+             ('ZFARM-PRO-ADMIN-0001', 'Lisensi Admin (10 Tahun)', 3650, 'active', 'admin@zuperfarm.local', 'Akun Administrator Utama', 'admin@zuperfarm.local', $1, $2)
            ON CONFLICT (key) DO NOTHING`,
           [now.toISOString(), adminExp.toISOString()]
         );

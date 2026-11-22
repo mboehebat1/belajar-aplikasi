@@ -619,8 +619,8 @@ export default function GameWorkspace({
               </h3>
               <p style={{ maxWidth: 560, margin: "0 auto 18px" }}>
                 {user
-                  ? `Akun Anda (${user.email}) saat ini masih berstatus Gratis. Aktifkan kode lisensi Pro (mis. ZFARM-PRO-2026-8801) untuk langsung membuka Buat Kelas, Kode Ruang 6 Angka, dan Rekap Nilai Excel.`
-                  : "Silakan masuk akun Admin/Guru Pro terlebih dahulu (atau daftar akun lalu aktifkan kode lisensi Pro) untuk membuka Buat Kelas & Ruang Mabar 30+ murid."}
+                  ? `Akun Anda (${user.email}) saat ini masih berstatus Gratis. Ajukan permintaan lisensi Pro (menunggu persetujuan Admin) atau masukkan kode lisensi resmi dari Admin untuk membuka Buat Kelas, Kode Ruang 6 Angka, dan Rekap Nilai Excel.`
+                  : "Silakan masuk akun guru Pro terlebih dahulu (atau daftar akun lalu ajukan lisensi Pro untuk persetujuan Admin) untuk membuka Buat Kelas & Ruang Mabar 30+ murid."}
               </p>
               <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
                 <button
@@ -631,7 +631,7 @@ export default function GameWorkspace({
                     onOpenPortal(user ? "lisensi" : "akun");
                   }}
                 >
-                  {user ? "🔓 Aktifkan Lisensi Pro Sekarang" : "🔐 Masuk Akun Pro / Admin"}
+                  {user ? "📩 Ajukan Lisensi Pro" : "🔐 Masuk / Daftar Akun Guru"}
                 </button>
                 <button
                   type="button"
