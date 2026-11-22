@@ -1,27 +1,30 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   LICENSE_PACKAGES,
-  activateLicenseForUser,
-  adminAssignProToUser,
-  adminDowngradeUser,
   buildLicenseCertificateText,
   formatDateID,
-  generateLicenses,
   getLicenseDaysLeft,
   isProActive,
-  listLicenses,
-  listUsers,
-  loginUser,
-  logoutUser,
-  registerUser,
   resetAllData,
-  revokeLicense,
-  updateUserProfile,
   type LicenseRecord,
   type LicenseStatus,
   type UserAccount,
   type UserRole,
 } from "../lib/authLicenseStore";
+import {
+  apiActivateLicense,
+  apiAdminAssignPro,
+  apiAdminData,
+  apiAdminDowngradeUser,
+  apiAdminRevokeLicense,
+  apiClaimOrGenerateLicenses,
+  apiListAvailableLicenses,
+  apiLogin,
+  apiLogout,
+  apiRegister,
+  apiUpdateProfile,
+  type BackendHealth,
+} from "../lib/gameApi";
 
 export type PortalTab = "akun" | "lisensi" | "admin";
 
@@ -29,16 +32,20 @@ interface PortalModalProps {
   open: boolean;
   initialTab: PortalTab;
   user: UserAccount | null;
+  health: BackendHealth | null;
   onClose: () => void;
-  onAuthChange: () => void;
+  onAuthChange: () => Promise<void> | void;
+  onOpenClassroom: () => void;
 }
 
 export default function PortalModal({
   open,
   initialTab,
   user,
+  health,
   onClose,
   onAuthChange,
+  onOpenClassroom,
 }: PortalModalProps) {
   const [tab, setTab] = useState<PortalTab>(initialTab);
   const [authMode, setAuthMode] = useState<"login" | "register">("login");
@@ -58,7 +65,6 @@ export default function PortalModal({
 
   // License activation
   const [licenseInput, setLicenseInput] = useState("");
-  const [roomCode, setRoomCode] = useState<string | null>(null);
 
   // Admin state
   const [adminPkg, setAdminPkg] = useState("yearly");
@@ -78,23 +84,31 @@ export default function PortalModal({
   // Data snapshot
   const [users, setUsers] = useState<UserAccount[]>([]);
   const [licenses, setLicenses] = useState<LicenseRecord[]>([]);
+  const [availableOnly, setAvailableOnly] = useState<LicenseRecord[]>([]);
+  const [busy, setBusy] = useState(false);
 
   // Feedback message
   const [msg, setMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
-  const refreshData = () => {
-    setUsers(listUsers());
-    setLicenses(listLicenses());
-    onAuthChange();
+  const refreshData = async () => {
+    await onAuthChange();
+    try {
+      const avail = await apiListAvailableLicenses();
+      setAvailableOnly(avail);
+      const adminSnap = await apiAdminData();
+      setUsers(adminSnap.users);
+      setLicenses(adminSnap.licenses);
+    } catch {
+      // Ignore transient error
+    }
   };
 
   useEffect(() => {
     if (open) {
       setTab(initialTab);
       setMsg(null);
-      setUsers(listUsers());
-      setLicenses(listLicenses());
+      void refreshData();
     }
   }, [open, initialTab]);
 
@@ -114,11 +128,6 @@ export default function PortalModal({
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose]);
 
-  const availableLicenses = useMemo(
-    () => licenses.filter((l) => l.status === "available"),
-    [licenses]
-  );
-
   const filteredLicenses = useMemo(() => {
     if (licenseFilter === "all") return licenses;
     return licenses.filter((l) => l.status === licenseFilter);
@@ -137,7 +146,7 @@ export default function PortalModal({
     try {
       await navigator.clipboard.writeText(text);
     } catch {
-      // Fallback ignored if clipboard blocked
+      // ignore
     }
     setCopiedKey(text);
     setTimeout(() => setCopiedKey((cur) => (cur === text ? null : cur)), 1800);
@@ -146,77 +155,96 @@ export default function PortalModal({
   const handleLogin = async (e: FormEvent) => {
     e.preventDefault();
     setMsg(null);
-    const res = await loginUser({ email: loginEmail, password: loginPass });
-    if (!res.ok) {
-      setMsg({ type: "err", text: res.error });
-      return;
+    setBusy(true);
+    try {
+      const res = await apiLogin(loginEmail, loginPass);
+      if (!res.ok) {
+        setMsg({ type: "err", text: res.error });
+        return;
+      }
+      setLoginPass("");
+      await refreshData();
+      setMsg({ type: "ok", text: `Berhasil masuk sebagai ${res.user.name}!` });
+    } finally {
+      setBusy(false);
     }
-    setLoginPass("");
-    refreshData();
-    setMsg({ type: "ok", text: `Berhasil masuk sebagai ${res.user.name}!` });
   };
 
   const handleRegister = async (e: FormEvent) => {
     e.preventDefault();
     setMsg(null);
-    const res = await registerUser({
-      name: regName,
-      email: regEmail,
-      institution: regInst,
-      password: regPass,
-    });
-    if (!res.ok) {
-      setMsg({ type: "err", text: res.error });
-      return;
+    setBusy(true);
+    try {
+      const res = await apiRegister({
+        name: regName,
+        email: regEmail,
+        institution: regInst,
+        password: regPass,
+      });
+      if (!res.ok) {
+        setMsg({ type: "err", text: res.error });
+        return;
+      }
+      setRegName("");
+      setRegEmail("");
+      setRegInst("");
+      setRegPass("");
+      await refreshData();
+      setMsg({
+        type: "ok",
+        text: `Akun ${res.user.name} berhasil dibuat! Anda kini dapat mengaktifkan lisensi Pro.`,
+      });
+    } finally {
+      setBusy(false);
     }
-    setRegName("");
-    setRegEmail("");
-    setRegInst("");
-    setRegPass("");
-    refreshData();
-    setMsg({
-      type: "ok",
-      text: `Akun ${res.user.name} berhasil dibuat! Anda kini dapat mengaktifkan lisensi Pro.`,
-    });
   };
 
   const handleQuickLogin = async (email: string, password: string) => {
     setMsg(null);
-    const res = await loginUser({ email, password });
-    if (!res.ok) {
-      setMsg({ type: "err", text: res.error });
-      return;
+    setBusy(true);
+    try {
+      const res = await apiLogin(email, password);
+      if (!res.ok) {
+        setMsg({ type: "err", text: res.error });
+        return;
+      }
+      await refreshData();
+      setMsg({ type: "ok", text: `Masuk sebagai ${res.user.name} (${res.user.role.toUpperCase()}).` });
+    } finally {
+      setBusy(false);
     }
-    refreshData();
-    setMsg({ type: "ok", text: `Masuk sebagai ${res.user.name} (${res.user.role.toUpperCase()}).` });
   };
 
-  const handleLogout = () => {
-    logoutUser();
+  const handleLogout = async () => {
+    apiLogout();
     setEditingProfile(false);
-    setRoomCode(null);
-    refreshData();
+    await refreshData();
     setMsg({ type: "ok", text: "Anda telah keluar dari akun." });
   };
 
-  const handleSaveProfile = (e: FormEvent) => {
+  const handleSaveProfile = async (e: FormEvent) => {
     e.preventDefault();
     if (!user) return;
-    const res = updateUserProfile({
-      email: user.email,
-      name: editName,
-      institution: editInst,
-    });
-    if (!res.ok) {
-      setMsg({ type: "err", text: res.error });
-      return;
+    setBusy(true);
+    try {
+      const res = await apiUpdateProfile({
+        email: user.email,
+        name: editName,
+        institution: editInst,
+      });
+      if (!res.ok) {
+        setMsg({ type: "err", text: res.error });
+        return;
+      }
+      setEditingProfile(false);
+      await refreshData();
+      setMsg({ type: "ok", text: "Profil akun berhasil diperbarui." });
+    } finally {
+      setBusy(false);
     }
-    setEditingProfile(false);
-    refreshData();
-    setMsg({ type: "ok", text: "Profil akun berhasil diperbarui." });
   };
 
-  const handleActivateLicense = (e: FormEvent) => {
+  const handleActivateLicense = async (e: FormEvent) => {
     e.preventDefault();
     setMsg(null);
     if (!user) {
@@ -227,42 +255,48 @@ export default function PortalModal({
       });
       return;
     }
-    const res = activateLicenseForUser({ email: user.email, licenseKey: licenseInput });
-    if (!res.ok) {
-      setMsg({ type: "err", text: res.error });
-      return;
+    setBusy(true);
+    try {
+      const res = await apiActivateLicense({ email: user.email, licenseKey: licenseInput });
+      if (!res.ok) {
+        setMsg({ type: "err", text: res.error });
+        return;
+      }
+      setLicenseInput("");
+      await refreshData();
+      setTab("akun");
+      setMsg({
+        type: "ok",
+        text: `Selamat! Lisensi ${res.license.key} (${res.license.planName}) berhasil diaktifkan sampai ${formatDateID(res.license.expiresAt)}.`,
+      });
+    } finally {
+      setBusy(false);
     }
-    setLicenseInput("");
-    refreshData();
-    setTab("akun");
-    setMsg({
-      type: "ok",
-      text: `Selamat! Lisensi ${res.license.key} (${res.license.planName}) berhasil diaktifkan sampai ${formatDateID(res.license.expiresAt)}.`,
-    });
   };
 
-  const handleClaimPackage = (pkgId: string) => {
+  const handleClaimPackage = async (pkgId: string) => {
     setMsg(null);
-    const created = generateLicenses({
-      packageId: pkgId,
-      count: 1,
-      note: user ? `Dipesan oleh ${user.email}` : "Dipesan melalui halaman Lisensi",
-      createdBy: user?.email ?? "self-service",
-    });
-    const newKey = created[0].key;
-    setLicenseInput(newKey);
-    refreshData();
-    copyText(newKey);
-    if (user) {
+    setBusy(true);
+    try {
+      const created = await apiClaimOrGenerateLicenses({
+        packageId: pkgId,
+        count: 1,
+        note: user ? `Dipesan oleh ${user.email}` : "Dipesan melalui halaman Lisensi",
+        createdBy: user?.email ?? "self-service",
+      });
+      if (created.length === 0) return;
+      const newKey = created[0].key;
+      setLicenseInput(newKey);
+      await refreshData();
+      void copyText(newKey);
       setMsg({
         type: "ok",
-        text: `Kode lisensi baru dibuat: ${newKey} (tersalin). Klik "Aktifkan Lisensi Sekarang" di bawah untuk langsung mengaktifkannya.`,
+        text: user
+          ? `Kode lisensi baru dibuat: ${newKey} (tersalin). Klik "Aktifkan Lisensi Sekarang" di atas.`
+          : `Kode lisensi baru dibuat: ${newKey} (tersalin). Masuk/daftar akun dulu lalu aktifkan kode ini.`,
       });
-    } else {
-      setMsg({
-        type: "ok",
-        text: `Kode lisensi baru dibuat: ${newKey} (tersalin). Silakan daftar/masuk akun terlebih dahulu lalu aktifkan kode ini.`,
-      });
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -278,34 +312,33 @@ export default function PortalModal({
     URL.revokeObjectURL(url);
   };
 
-  const handleCreateRoomCode = () => {
-    const code = String(Math.floor(100000 + Math.random() * 900000));
-    setRoomCode(code);
-    copyText(code);
-  };
-
-  const handleAdminGenerate = (e: FormEvent) => {
+  const handleAdminGenerate = async (e: FormEvent) => {
     e.preventDefault();
     if (!user || user.role !== "admin") return;
-    const created = generateLicenses({
-      packageId: adminPkg,
-      count: adminCount,
-      note: adminNote,
-      createdBy: user.email,
-    });
-    setAdminNote("");
-    refreshData();
-    if (created.length === 1) {
-      copyText(created[0].key);
-      setMsg({
-        type: "ok",
-        text: `1 kode lisensi berhasil dibuat & disalin: ${created[0].key}`,
+    setBusy(true);
+    try {
+      const created = await apiClaimOrGenerateLicenses({
+        packageId: adminPkg,
+        count: adminCount,
+        note: adminNote,
+        createdBy: user.email,
       });
-    } else {
-      setMsg({
-        type: "ok",
-        text: `${created.length} kode lisensi baru berhasil dibuat!`,
-      });
+      setAdminNote("");
+      await refreshData();
+      if (created.length === 1) {
+        void copyText(created[0].key);
+        setMsg({
+          type: "ok",
+          text: `1 kode lisensi berhasil dibuat & disalin: ${created[0].key}`,
+        });
+      } else {
+        setMsg({
+          type: "ok",
+          text: `${created.length} kode lisensi baru berhasil dibuat!`,
+        });
+      }
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -313,55 +346,60 @@ export default function PortalModal({
     e.preventDefault();
     if (!user || user.role !== "admin") return;
     setMsg(null);
-    const res = await registerUser({
-      name: newAccName,
-      email: newAccEmail,
-      institution: newAccInst,
-      password: newAccPass,
-      role: newAccRole,
-      autoLogin: false,
-    });
-    if (!res.ok) {
-      setMsg({ type: "err", text: res.error });
-      return;
-    }
-
-    let extra = "";
-    if (newAccPro) {
-      const assigned = adminAssignProToUser({
-        targetEmail: res.user.email,
-        adminEmail: user.email,
-        packageId: "yearly",
+    setBusy(true);
+    try {
+      const res = await apiRegister({
+        name: newAccName,
+        email: newAccEmail,
+        institution: newAccInst,
+        password: newAccPass,
+        role: newAccRole,
+        autoLogin: false,
       });
-      if (assigned.ok) {
-        extra = ` + Lisensi Pro aktif (${assigned.license.key})`;
+      if (!res.ok) {
+        setMsg({ type: "err", text: res.error });
+        return;
       }
-    }
 
-    setNewAccName("");
-    setNewAccEmail("");
-    setNewAccInst("");
-    setNewAccPass("");
-    refreshData();
-    setMsg({
-      type: "ok",
-      text: `Akun ${res.user.email} berhasil dibuat${extra}.`,
-    });
+      let extra = "";
+      if (newAccPro) {
+        const assigned = await apiAdminAssignPro({
+          targetEmail: res.user.email,
+          adminEmail: user.email,
+          packageId: "yearly",
+        });
+        if (assigned.ok) {
+          extra = ` + Lisensi Pro aktif (${assigned.license.key})`;
+        }
+      }
+
+      setNewAccName("");
+      setNewAccEmail("");
+      setNewAccInst("");
+      setNewAccPass("");
+      await refreshData();
+      setMsg({
+        type: "ok",
+        text: `Akun ${res.user.email} berhasil dibuat${extra}.`,
+      });
+    } finally {
+      setBusy(false);
+    }
   };
 
-  const handleRevoke = (key: string) => {
-    const res = revokeLicense(key);
+  const handleRevoke = async (key: string) => {
+    const res = await apiAdminRevokeLicense(key);
     if (!res.ok) {
       setMsg({ type: "err", text: res.error });
       return;
     }
-    refreshData();
+    await refreshData();
     setMsg({ type: "ok", text: `Lisensi ${key} telah dicabut.` });
   };
 
-  const handleAdminAssignPro = (targetEmail: string) => {
+  const handleAdminAssignPro = async (targetEmail: string) => {
     if (!user || user.role !== "admin") return;
-    const res = adminAssignProToUser({
+    const res = await apiAdminAssignPro({
       targetEmail,
       adminEmail: user.email,
       packageId: "yearly",
@@ -370,28 +408,28 @@ export default function PortalModal({
       setMsg({ type: "err", text: res.error });
       return;
     }
-    refreshData();
+    await refreshData();
     setMsg({
       type: "ok",
       text: `Akun ${targetEmail} kini Pro dengan kode ${res.license.key}.`,
     });
   };
 
-  const handleAdminDowngrade = (targetEmail: string) => {
-    const res = adminDowngradeUser(targetEmail);
+  const handleAdminDowngrade = async (targetEmail: string) => {
+    const res = await apiAdminDowngradeUser(targetEmail);
     if (!res.ok) {
       setMsg({ type: "err", text: res.error });
       return;
     }
-    refreshData();
+    await refreshData();
     setMsg({ type: "ok", text: `Akun ${targetEmail} dikembalikan ke paket Gratis.` });
   };
 
   const handleResetDemo = async () => {
-    if (!window.confirm("Reset semua akun & lisensi kembali ke data bawaan?")) return;
+    if (!window.confirm("Reset data lokal kembali ke pengaturan awal?")) return;
     await resetAllData();
-    refreshData();
-    setMsg({ type: "ok", text: "Data akun & lisensi telah direset ke pengaturan awal." });
+    await refreshData();
+    setMsg({ type: "ok", text: "Data lokal telah direset ke pengaturan awal." });
   };
 
   const proActive = isProActive(user);
@@ -404,8 +442,11 @@ export default function PortalModal({
             <h2 className="px" style={{ margin: 0, fontSize: 26 }}>
               🌾 Portal Akun &amp; Lisensi ZuperFarm
             </h2>
-            <div className="muted" style={{ fontSize: 13 }}>
-              Kelola akun guru, aktivasi kode lisensi Pro, dan panel admin
+            <div className="muted" style={{ fontSize: 13, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginTop: 2 }}>
+              <span>Kelola akun guru, aktivasi lisensi Pro, dan panel admin</span>
+              <span className={`badge ${health?.mode === "postgres" ? "status-available" : "free"}`}>
+                {health?.mode === "postgres" ? "🟢 Server Postgres Aktif" : "🟡 Mode Lokal"}
+              </span>
             </div>
           </div>
           <button className="btn sm w" type="button" onClick={onClose} aria-label="Tutup">
@@ -503,8 +544,8 @@ export default function PortalModal({
                         placeholder="Minimal 6 karakter"
                       />
                     </label>
-                    <button className="btn g" type="submit">
-                      🔓 Masuk Sekarang
+                    <button className="btn g" type="submit" disabled={busy}>
+                      {busy ? "Memproses..." : "🔓 Masuk Sekarang"}
                     </button>
                   </form>
                 ) : (
@@ -549,8 +590,8 @@ export default function PortalModal({
                         placeholder="Minimal 6 karakter"
                       />
                     </label>
-                    <button className="btn g" type="submit">
-                      🌱 Daftar Akun Guru
+                    <button className="btn g" type="submit" disabled={busy}>
+                      {busy ? "Memproses..." : "🌱 Daftar Akun Guru"}
                     </button>
                   </form>
                 )}
@@ -561,17 +602,18 @@ export default function PortalModal({
                   ⚡ Akun Siap Pakai
                 </h3>
                 <p style={{ marginTop: 0, fontSize: 14 }}>
-                  Sudah tersedia akun bawaan yang bisa langsung dipakai untuk mencoba fitur guru maupun panel admin pembuat lisensi:
+                  Masuk instan menggunakan akun bawaan untuk langsung membuka fitur **Buat Kelas** dan **Ruang Mabar 30+ Murid**:
                 </p>
 
                 <div className="demo-box">
                   <div>
-                    <b>👑 Admin (Pro + Pembuat Lisensi)</b>
+                    <b>👑 Admin (Pro + Buat Kelas + Lisensi)</b>
                     <div className="mono">admin@zuperfarm.local / admin123</div>
                   </div>
                   <button
                     type="button"
                     className="btn sm"
+                    disabled={busy}
                     onClick={() => handleQuickLogin("admin@zuperfarm.local", "admin123")}
                   >
                     Masuk Admin
@@ -586,6 +628,7 @@ export default function PortalModal({
                   <button
                     type="button"
                     className="btn sm b"
+                    disabled={busy}
                     onClick={() => handleQuickLogin("guru@zuperfarm.local", "guru123")}
                   >
                     Masuk Guru
@@ -656,7 +699,7 @@ export default function PortalModal({
                         onChange={(e) => setEditInst(e.target.value)}
                       />
                     </label>
-                    <button className="btn sm g" type="submit">
+                    <button className="btn sm g" type="submit" disabled={busy}>
                       💾 Simpan Profil
                     </button>
                   </form>
@@ -665,21 +708,21 @@ export default function PortalModal({
                 {proActive && (
                   <div className="pro-tools" style={{ marginTop: 16 }}>
                     <h4 className="px" style={{ margin: "0 0 8px", fontSize: 19 }}>
-                      🎮 Fitur Guru Pro Terbuka
+                      🏫 Akses Pro Terbuka Penuh!
                     </h4>
                     <p style={{ margin: "0 0 10px", fontSize: 14 }}>
-                      Akun Anda memiliki akses penuh ke sesi live mabar, asesmen, dan kelas. Buat kode sesi 6 angka untuk dibagikan ke murid:
+                      Anda bisa langsung membuat kelas, menyusun paket soal, dan membuka ruang mabar kode 6 angka untuk <b>30+ murid sekaligus</b>.
                     </p>
-                    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                      <button type="button" className="btn sm g" onClick={handleCreateRoomCode}>
-                        🎲 Buat Kode Sesi 6 Angka
-                      </button>
-                      {roomCode && (
-                        <span className="room-code-pill" onClick={() => copyText(roomCode)} title="Klik untuk salin">
-                          Kode: <b>{roomCode}</b> {copiedKey === roomCode ? "✓ Tersalin" : "📋"}
-                        </span>
-                      )}
-                    </div>
+                    <button
+                      type="button"
+                      className="btn sm g"
+                      onClick={() => {
+                        onClose();
+                        onOpenClassroom();
+                      }}
+                    >
+                      🚀 Buka Kelas &amp; Ruang Mabar ▸
+                    </button>
                   </div>
                 )}
               </div>
@@ -726,7 +769,7 @@ export default function PortalModal({
                 ) : (
                   <div>
                     <p style={{ marginTop: 0, fontSize: 14 }}>
-                      Akun Anda saat ini masih berada di <b>Paket Gratis</b>. Masukkan kode lisensi untuk langsung mengaktifkan semua fitur Pro!
+                      Akun Anda saat ini masih berada di <b>Paket Gratis</b>. Masukkan kode lisensi untuk langsung membuka fitur <b>Buat Kelas &amp; Mabar 30+ Murid</b>!
                     </p>
                     <form className="form-stack" onSubmit={handleActivateLicense}>
                       <label>
@@ -736,11 +779,11 @@ export default function PortalModal({
                           required
                           value={licenseInput}
                           onChange={(e) => setLicenseInput(e.target.value.toUpperCase())}
-                          placeholder="ZFARM-PRO-2026-XXXX"
+                          placeholder="ZFARM-PRO-2026-8801"
                           className="mono"
                         />
                       </label>
-                      <button className="btn g" type="submit">
+                      <button className="btn g" type="submit" disabled={busy}>
                         🔓 Aktifkan Lisensi Pro
                       </button>
                     </form>
@@ -776,7 +819,7 @@ export default function PortalModal({
                     placeholder="Contoh: ZFARM-PRO-2026-8801"
                     className="mono"
                   />
-                  <button className="btn g" type="submit">
+                  <button className="btn g" type="submit" disabled={busy}>
                     {user ? "🔓 Aktifkan Lisensi Sekarang" : "🔐 Masuk & Aktifkan"}
                   </button>
                 </form>
@@ -809,6 +852,7 @@ export default function PortalModal({
                       <button
                         type="button"
                         className="btn sm"
+                        disabled={busy}
                         onClick={() => handleClaimPackage(pkg.id)}
                       >
                         ⚡ Buat Kode Lisensi
@@ -820,15 +864,15 @@ export default function PortalModal({
 
               <div className="subcard">
                 <h3 className="px" style={{ marginTop: 0, fontSize: 20 }}>
-                  🎫 Kode Lisensi Tersedia ({availableLicenses.length})
+                  🎫 Kode Lisensi Tersedia ({availableOnly.length})
                 </h3>
-                {availableLicenses.length === 0 ? (
+                {availableOnly.length === 0 ? (
                   <p className="muted" style={{ margin: 0 }}>
                     Belum ada kode tersedia. Klik "Buat Kode Lisensi" pada paket di atas untuk membuat kode baru.
                   </p>
                 ) : (
                   <div className="avail-list">
-                    {availableLicenses.slice(0, 6).map((lic) => (
+                    {availableOnly.slice(0, 6).map((lic) => (
                       <div className="avail-item" key={lic.key}>
                         <div>
                           <div className="mono" style={{ fontWeight: 900 }}>{lic.key}</div>
@@ -842,7 +886,7 @@ export default function PortalModal({
                             className="btn sm w"
                             onClick={() => copyText(lic.key)}
                           >
-                            {copiedKey === lic.key ? "✓ Tersalin" : "📋 Salin"}
+                            {copiedKey === lic.key ? "✓" : "📋"}
                           </button>
                           <button
                             type="button"
@@ -882,6 +926,7 @@ export default function PortalModal({
               <button
                 type="button"
                 className="btn g"
+                disabled={busy}
                 onClick={() => handleQuickLogin("admin@zuperfarm.local", "admin123")}
               >
                 👑 Masuk sebagai Admin Sekarang
@@ -927,9 +972,11 @@ export default function PortalModal({
                     👥 Kelola Akun ({users.length})
                   </button>
                 </div>
-                <button type="button" className="btn sm w" onClick={handleResetDemo}>
-                  🔄 Reset Data Bawaan
-                </button>
+                {health?.mode !== "postgres" && (
+                  <button type="button" className="btn sm w" onClick={handleResetDemo}>
+                    🔄 Reset Data Lokal
+                  </button>
+                )}
               </div>
 
               {adminSection === "licenses" ? (
@@ -968,7 +1015,7 @@ export default function PortalModal({
                           placeholder="Contoh: Ibu Rina - SMAN 3"
                         />
                       </label>
-                      <button className="btn g" type="submit" style={{ alignSelf: "flex-end" }}>
+                      <button className="btn g" type="submit" disabled={busy} style={{ alignSelf: "flex-end" }}>
                         ⚡ Generate
                       </button>
                     </div>
@@ -1125,7 +1172,7 @@ export default function PortalModal({
                         Langsung aktifkan Lisensi Pro (1 Tahun)
                       </label>
                     </div>
-                    <button className="btn g" type="submit" style={{ marginTop: 10 }}>
+                    <button className="btn g" type="submit" disabled={busy} style={{ marginTop: 10 }}>
                       ➕ Buat Akun
                     </button>
                   </form>

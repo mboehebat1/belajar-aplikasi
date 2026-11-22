@@ -1,75 +1,72 @@
 import { useEffect, useState, type FormEvent } from "react";
+import GameWorkspace, { type WorkspaceView } from "./components/GameWorkspace";
 import PortalModal, { type PortalTab } from "./components/PortalModal";
+import { isProActive, type UserAccount } from "./lib/authLicenseStore";
 import {
-  ensureSeeded,
-  getCurrentUser,
-  isProActive,
-  type UserAccount,
-} from "./lib/authLicenseStore";
-
-const ORIGIN = "https://zuperfarm.schoolpedia.id";
-const PLAY = (hash: string) => `${ORIGIN}/play.html#${hash}`;
+  apiGetCurrentUser,
+  checkBackendHealth,
+  type BackendHealth,
+} from "./lib/gameApi";
 
 const features = [
   { ic: "🌱", t: "Kebun Ilmu", d: <>Cangkul, tanam, lalu "siram" tanaman dengan menjawab soal. Tiga kali benar = panen! Tiap bibit mewakili satu mapel.</> },
   { ic: "📖", t: "Perpustakaan Desa", d: <>Materi teks, gambar, dan video YouTube dipelajari langsung di dalam game, sebelum atau sesudah menjawab soal.</> },
   { ic: "⚔️", t: "Mabar Satu Kelas", d: <>Puluhan murid main bersama secara realtime di arena. Masuk cukup dengan <b>kode 6 angka</b> atau <b>link</b>, seperti Quizizz.</> },
-  { ic: "👩‍🏫", t: "Guru Ikut Masuk", d: <>Guru tampil sebagai karakter di arena, memantau murid secara langsung, mengirim pesan, menjeda, dan mengumpulkan murid tanpa ikut mengerjakan soal.</> },
+  { ic: "👩‍🏫", t: "Guru Ikut Masuk", d: <>Guru memantau murid secara langsung di peta arena, mengirim pengumuman, menjeda, dan mengakhiri sesi kapan saja.</> },
   { ic: "📝", t: "Mode Asesmen", d: <>Pakai game untuk Asesmen Harian, PTS, atau PAS. Tiap soal dijawab sekali, nilai = benar ÷ jumlah soal, kunci disembunyikan.</> },
-  { ic: "📊", t: "Nilai & Analisis", d: <>Rekap nilai, ketuntasan KKM, sebaran nilai, tingkat kesukaran, daya pembeda, dan pengecoh. Unduh <b>Excel & PDF</b>.</> },
-  { ic: "🐄", t: "Kebun Makin Hidup", d: <>Musim hujan & kemarau, cuaca harian, kandang ayam/bebek/kambing/sapi, hiasan kebun, butik baju, dan <b>lencana koleksi</b>. Semua digerakkan dengan menjawab soal.</> },
-  { ic: "🧩", t: "Ragam Soal", d: <>Pilihan ganda, PG kompleks, benar/salah, isian, <b>menjodohkan</b>, <b>mengurutkan</b>, plus soal bergambar & bersuara (link Google Drive bisa).</> },
-  { ic: "🏢", t: "Bukan Cuma Sekolah", d: <>Bisa untuk <b>kampus</b> (dosen & mahasiswa) dan <b>pelatihan perusahaan</b> (fasilitator & peserta): pre-test/post-test, K3, onboarding karyawan. Istilah, rekap, dan sertifikat menyesuaikan.</> },
-  { ic: "🔁", t: "Ulang Soal Salah & PR", d: <>Soal yang salah otomatis diulang di hari berbeda sampai dikuasai. Guru bisa memberi <b>PR berjadwal</b> dan memantau siapa yang sudah tuntas.</> },
+  { ic: "📊", t: "Nilai & Analisis", d: <>Rekap nilai otomatis, ketuntasan KKM, dan analisis akurasi tiap butir soal. Unduh <b>CSV / Excel</b> sekali klik.</> },
+  { ic: "🐄", t: "Kebun Makin Hidup", d: <>Tanam &amp; panen 6 petak kebun ilmu langsung di dalam game. Setiap jawaban benar menumbuhkan hasil panen dan bonus skor.</> },
+  { ic: "🧩", t: "Ragam Soal", d: <>Pilihan ganda (A–D), benar/salah, dan isian singkat, lengkap dengan pembahasan serta ringkasan materi.</> },
+  { ic: "🏢", t: "Bukan Cuma Sekolah", d: <>Bisa untuk <b>kampus</b> (dosen & mahasiswa) dan <b>pelatihan perusahaan</b> (fasilitator & peserta): pre-test/post-test, K3, onboarding karyawan.</> },
+  { ic: "👥", t: "Siap 30–100 Pemain", d: <>Ditenagai API serverless Vercel + database PostgreSQL sehingga satu kelas penuh (30–100 murid) bisa bergabung bersamaan lintas perangkat.</> },
 ];
 
 const modes = [
-  { t: "🌀 Berburu Peti + Zona", d: <>Peti soal tersebar di arena dan zona aman menyempit tiap tahap, seperti di Free Fire atau PUBG. Di luar zona, skor berkurang. Cepat, seru, penuh strategi.</> },
-  { t: "🧭 Jelajah Skor", d: <>Jelajahi arena, buka peti, kumpulkan poin sebanyak-banyaknya sebelum waktu habis. Cocok untuk latihan santai.</> },
-  { t: "🏁 Balapan Gerbang", d: <>Lintasan dengan gerbang bertingkat yang hanya terbuka jika soal dijawab benar. Siapa yang pertama sampai di garis finis?</> },
-  { t: "👾 Boss Raid & Mode Tim", d: <>Satu kelas bekerja sama mengalahkan monster dengan jawaban benar, atau bertanding 2–4 tim. Ada peti emas berisi power-up dan <b>Layar Proyektor</b> untuk ditampilkan di depan kelas.</> },
+  { t: "🌱 Kebun Ilmu", d: <>Setiap jawaban benar menumbuhkan bibit hingga panen di 6 petak kebunmu. Setiap 2 jawaban benar menghasilkan 1 panen + bonus poin!</> },
+  { t: "⚔️ Arena Berburu Peti", d: <>Semua karakter murid tampil di peta arena live. Jawab soal secepat mungkin untuk meraih bonus kecepatan dan merebut mahkota #1!</> },
+  { t: "📝 Mode Asesmen (Ulangan)", d: <>Tiap soal dijawab sekali, kunci disembunyikan selama ujian, lalu sistem menghitung nilai 0–100 dan ketuntasan KKM otomatis.</> },
+  { t: "📊 Layar Pantau Guru & Excel", d: <>Guru melihat semua 30+ murid di lobby &amp; arena, kirim pengumuman live, cek analisis butir soal, lalu unduh rekap nilai CSV/Excel.</> },
 ];
 
 const flow = ["🏟️ Lobby", "▶ Guru Mulai", "🚪 Gerbang Terbuka", "🎁 Jawab & Kumpulkan Skor", "🏆 Podium & Nilai"];
 
 const teacherPoints = [
-  <><b>Paket Saya</b>: simpan paket soal, mainkan lagi kapan saja, dan lihat riwayat hasilnya.</>,
-  <><b>Buat soal cepat dengan AI</b>: isi tujuan pembelajaran, salin perintah ke ChatGPT/Gemini/Claude, tempel jawabannya — langsung jadi paket. Bisa juga tulis manual.</>,
-  <><b>Paket Gratis siap pakai</b>: materi ringkas + soal untuk SD, SMP, SMA, dan SMK.</>,
-  <><b>Pengaturan skor</b>: durasi, poin, bonus kecepatan, pengurangan salah, KKM, acak soal & opsi.</>,
-  <><b>Pantau realtime</b>: siapa online, skor, progres tiap murid, peta mini, ikuti kamera murid.</>,
-  <><b>Kelas</b>: progres kebun tiap murid tersimpan, pengumuman, analisis per mapel.</>,
-  <><b>Rekap otomatis</b>: Excel (3 lembar) dan PDF siap cetak, lengkap dengan analisis butir.</>,
+  <><b>Buat Kelas &amp; Ruang Mabar</b>: kelola daftar kelas dan buka ruang kode 6 angka untuk 30–100 murid sekaligus.</>,
+  <><b>Buat Paket Soal Sendiri</b>: susun soal Pilihan Ganda, Benar/Salah, atau Isian lengkap dengan materi ringkas.</>,
+  <><b>Paket Gratis siap pakai</b>: paket contoh Matematika SD, IPA SMP, dan Wawasan Nusantara langsung bisa dimainkan.</>,
+  <><b>Pengaturan durasi &amp; KKM</b>: atur durasi permainan, batas KKM, dan kapasitas murid per sesi.</>,
+  <><b>Pantau live di peta arena</b>: lihat siapa sudah masuk, skor, panen, dan progres soal tiap murid.</>,
+  <><b>Kontrol kelas penuh</b>: mulai, jeda, akhiri sesi, dan kirim pengumuman ke layar semua murid.</>,
+  <><b>Rekap nilai otomatis</b>: analisis akurasi butir soal + tombol unduh rekap Excel (CSV) siap cetak.</>,
 ];
 
 const freePlan: [React.ReactNode, boolean][] = [
-  ["Main ZuperFarm dengan paket contoh", true],
-  ["Buat soal & materi sendiri (tersimpan di perangkat)", true],
+  ["Main ZuperFarm Solo dengan paket contoh", true],
+  ["Buat soal & materi sendiri", true],
   ["Mainkan paket buatanmu sendiri", true],
-  ["Riwayat & hasil latihan di perangkat", true],
-  ["Bagikan ke murid lewat kode/link", false],
-  ["Sesi live mabar, kelas, asesmen", false],
-  ["Dashboard nilai, analisis, Excel & PDF", false],
+  ["Gabung sesi kelas dengan kode 6 angka", true],
+  ["Buat Kelas & buka ruang kode 6 angka", false],
+  ["Sesi live mabar 30–100 murid & asesmen", false],
+  ["Dashboard pantau guru, analisis butir & unduh Excel", false],
 ];
 
 const proPlan = [
   <>Semua fitur Gratis</>,
-  <><b>Kode & link main</b>: murid langsung masuk lobby</>,
-  <><b>Sesi live</b> 3 mode mabar, guru ikut masuk & memantau</>,
-  <><b>Mode asesmen</b> Harian/PTS/PAS + pengaturan skor</>,
-  <><b>Kelas</b> dengan progres murid tersimpan</>,
-  <><b>Paket Saya</b> di cloud + riwayat sesi</>,
-  <><b>Dashboard nilai</b>, analisis butir, unduh <b>Excel & PDF</b></>,
-  <><b>PR berjadwal</b>, sertifikat juara PDF, layar proyektor</>,
+  <><b>Buat Kelas</b> &amp; kelola daftar kelas sendiri</>,
+  <><b>Kode 6 angka &amp; link join</b> untuk 30–100 murid bersamaan</>,
+  <><b>3 Mode Mabar</b>: Kebun Ilmu, Arena Live, &amp; Asesmen</>,
+  <><b>Kontrol Guru Live</b>: mulai, jeda, akhiri, &amp; kirim pesan</>,
+  <><b>Peta Arena Realtime</b> + Papan Peringkat &amp; Podium</>,
+  <><b>Analisis butir soal</b> + ketuntasan KKM otomatis</>,
+  <><b>Unduh Rekap Nilai Excel (CSV)</b> sekali klik</>,
 ];
 
 const faqs = [
-  ["Apakah bisa dimainkan banyak murid sekaligus?", <>Bisa. Satu sesi live menampung hingga 120 pemain. Semua murid saling terlihat di arena, dan guru bisa ikut masuk untuk memantau.</>],
-  ["Bagaimana murid masuk ke sesi?", <>Guru membagikan <b>kode 6 angka</b>, <b>link</b>, atau <b>QR</b>. Murid membuka link (atau mengetik kode di halaman ini), menulis nama, lalu langsung masuk lobby. Tidak perlu akun.</>],
-  ["Bisakah dipakai untuk ulangan / asesmen?", <>Bisa. Pilih jenis Asesmen Harian, PTS, PAS, atau nama asesmen sendiri. Tiap soal hanya dijawab sekali, kunci disembunyikan, dan nilai dihitung otomatis lengkap dengan KKM dan analisis butir soal.</>],
-  ["Bagaimana cara membuat soal dengan AI?", <>Buka <b>Buat Soal → ➕ Paket Baru → 🤖 Buat dengan AI</b>. Isi jenjang, kelas, mapel, dan tujuan pembelajaran, pilih bentuk soal, lalu klik tombol ChatGPT, Gemini, atau Claude. Perintahnya otomatis tersalin — tinggal tempel di AI, kirim, salin jawabannya, dan tempel kembali di ZuperFarm. Paket langsung jadi.</>],
-  ["Apakah materi bisa berisi video YouTube?", <>Bisa. Tempel link YouTube di materi, dan video diputar langsung di Perpustakaan Desa di dalam game.</>],
-  ["Bagaimana cara mengaktifkan lisensi Pro?", <>Klik tombol <b>Aktivasi Lisensi</b> di halaman ini, buat atau pilih kode lisensi yang tersedia, lalu masuk/daftar akun guru dan masukkan kode tersebut di Dashboard Akun. Akun langsung aktif sebagai Pro.</>],
+  ["Apakah bisa dimainkan 30 murid sekaligus?", <>Bisa! Aplikasi ini dirancang mendukung <b>30 hingga 100 murid bersamaan</b> dalam satu sesi melalui API Vercel + database PostgreSQL. Cukup tambahkan variabel <code>DATABASE_URL</code> (mis. Neon Postgres) di pengaturan Vercel untuk sinkronisasi lintas HP/laptop.</>],
+  ["Bagaimana murid masuk ke sesi?", <>Guru membagikan <b>kode 6 angka</b> atau <b>link join</b> (<code>?join=123456</code>). Murid cukup mengetik nama dan memilih karakter, lalu langsung masuk lobby tanpa perlu akun.</>],
+  ["Bagaimana cara membuka fitur Buat Kelas (Pro)?", <>Masuk menggunakan akun Pro (mis. <code>admin@zuperfarm.local</code> / <code>admin123</code>) atau daftar akun guru baru lalu aktifkan kode lisensi yang tersedia di menu <b>🔑 Lisensi</b>. Setelah Pro aktif, fitur <b>Buat Kelas &amp; Mabar</b> langsung terbuka!</>],
+  ["Bisakah dipakai untuk ulangan / asesmen?", <>Bisa. Pilih mode <b>Asesmen</b> saat membuka ruang. Tiap soal dijawab sekali, kunci disembunyikan selama pengerjaan, dan nilai serta status KKM otomatis direkap untuk diunduh ke Excel (CSV).</>],
+  ["Bagaimana cara mengaktifkan mode database lintas perangkat di Vercel?", <>Buat database PostgreSQL gratis (mis. di Neon), salin connection string-nya ke Environment Variable <code>DATABASE_URL</code> di project Vercel <code>belajar-aplikasi</code>, lalu redeploy. Tabel database akan dibuat otomatis saat pertama kali dibuka.</>],
 ];
 
 export default function App() {
@@ -77,17 +74,40 @@ export default function App() {
   const [installEvt, setInstallEvt] = useState<any>(null);
   const [portalOpen, setPortalOpen] = useState(false);
   const [portalTab, setPortalTab] = useState<PortalTab>("akun");
+  const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [workspaceView, setWorkspaceView] = useState<WorkspaceView>("solo");
+  const [workspaceJoinCode, setWorkspaceJoinCode] = useState("");
   const [currentUser, setCurrentUser] = useState<UserAccount | null>(null);
+  const [health, setHealth] = useState<BackendHealth | null>(null);
 
-  const syncUser = () => {
-    setCurrentUser(getCurrentUser());
+  const syncUser = async () => {
+    const u = await apiGetCurrentUser();
+    setCurrentUser(u);
   };
 
   useEffect(() => {
     let alive = true;
-    ensureSeeded().then(() => {
-      if (alive) setCurrentUser(getCurrentUser());
+    checkBackendHealth().then(async (h) => {
+      if (!alive) return;
+      setHealth(h);
+      const u = await apiGetCurrentUser();
+      if (alive) setCurrentUser(u);
     });
+
+    // Support direct join links: ?join=123456
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const join = (params.get("join") ?? "").replace(/\D/g, "").slice(0, 6);
+      if (join.length === 6) {
+        setCode(join);
+        setWorkspaceJoinCode(join);
+        setWorkspaceView("student_join");
+        setWorkspaceOpen(true);
+      }
+    } catch {
+      // ignore
+    }
+
     return () => {
       alive = false;
     };
@@ -103,17 +123,23 @@ export default function App() {
   }, []);
 
   const openPortal = (tab: PortalTab) => {
+    setWorkspaceOpen(false);
     setPortalTab(tab);
     setPortalOpen(true);
   };
 
+  const openWorkspace = (view: WorkspaceView, joinCode = "") => {
+    setPortalOpen(false);
+    setWorkspaceView(view);
+    if (joinCode) setWorkspaceJoinCode(joinCode);
+    setWorkspaceOpen(true);
+  };
+
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    const v = code.trim().toUpperCase().replace(/\s/g, "");
+    const v = code.trim().replace(/\D/g, "").slice(0, 6);
     if (!v) return;
-    window.location.href = /^\d{6}$/.test(v)
-      ? `${ORIGIN}/main/${v}`
-      : `${ORIGIN}/play.html?kelas=${encodeURIComponent(v)}`;
+    openWorkspace("student_join", v);
   };
 
   const install = async () => {
@@ -145,6 +171,13 @@ export default function App() {
           <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
             <button
               type="button"
+              className="btn sm g"
+              onClick={() => openWorkspace("classes")}
+            >
+              🏫 Kelas
+            </button>
+            <button
+              type="button"
               className="btn sm b"
               onClick={() => openPortal("lisensi")}
             >
@@ -157,7 +190,7 @@ export default function App() {
             >
               {currentUser
                 ? `${proActive ? "⭐" : "👤"} ${currentUser.name.split(" ")[0]}`
-                : "👩‍🏫 Masuk Guru"}
+                : "👩‍🏫 Masuk"}
             </button>
           </div>
         </div>
@@ -172,13 +205,17 @@ export default function App() {
               Belajar sambil <b>bertani</b> &amp; <b>berpetualang</b> bareng satu kelas!
             </h1>
             <p className="lead">
-              ZuperFarm adalah game belajar bergaya pixel-art untuk <b>SD sampai SMA/SMK</b>. Murid menanam, memanen, dan berburu peti ilmu dengan <b>menjawab soal</b>. Guru menyiapkan materi &amp; soal, memantau permainan secara langsung, lalu mendapat <b>nilai dan analisisnya</b> secara otomatis.
+              ZuperFarm adalah game belajar bergaya pixel-art untuk <b>SD sampai SMA/SMK</b>. Murid menanam, memanen, dan berburu peti ilmu dengan <b>menjawab soal</b>. Guru membuat kelas &amp; soal, memantau hingga <b>30–100 murid</b> secara langsung, lalu mengunduh <b>nilai dan analisisnya</b> otomatis.
             </p>
             <div className="cta">
-              <a className="btn g" href={PLAY("main")}>🎮 Main Sekarang — Gratis</a>
-              <a className="btn" href={PLAY("buat")}>✏️ Buat Soal Sendiri</a>
-              <button type="button" className="btn b" onClick={() => openPortal("lisensi")}>
-                ⭐ Lisensi Pro
+              <button type="button" className="btn g" onClick={() => openWorkspace("solo")}>
+                🎮 Main Sekarang — Gratis
+              </button>
+              <button type="button" className="btn" onClick={() => openWorkspace("packs")}>
+                ✏️ Buat Soal Sendiri
+              </button>
+              <button type="button" className="btn b" onClick={() => openWorkspace("classes")}>
+                🏫 Buat Kelas &amp; Mabar
               </button>
             </div>
             {currentUser && (
@@ -190,17 +227,28 @@ export default function App() {
                   <b>{currentUser.name}</b>{" "}
                   <span className="muted">({currentUser.email})</span>
                 </div>
-                <button type="button" className="btn sm w" onClick={() => openPortal("akun")}>
-                  Buka Akun ▸
-                </button>
+                <div style={{ display: "flex", gap: 6 }}>
+                  {proActive && (
+                    <button
+                      type="button"
+                      className="btn sm g"
+                      onClick={() => openWorkspace("classes")}
+                    >
+                      🏫 Buka Kelas
+                    </button>
+                  )}
+                  <button type="button" className="btn sm w" onClick={() => openPortal("akun")}>
+                    Akun ▸
+                  </button>
+                </div>
               </div>
             )}
             <form className="join wood" onSubmit={submit}>
-              <label>🔑 Punya kode dari guru? Ketik di sini:</label>
+              <label>🔑 Punya kode 6 angka dari guru? Ketik di sini:</label>
               <input
                 value={code}
-                onChange={(e) => setCode(e.target.value)}
-                maxLength={8}
+                onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
+                maxLength={6}
                 placeholder="123456"
                 autoComplete="off"
                 aria-label="Kode main"
@@ -218,7 +266,7 @@ export default function App() {
         <div className="wrap">
           <h2 className="t">🌾 Satu game, banyak cara belajar</h2>
           <p className="sub">
-            Mapel dan jenjang bebas: guru tinggal mengisi materi dan soal (manual atau dengan bantuan AI). Bisa dimainkan di <b>laptop maupun HP</b>.
+            Mapel dan jenjang bebas: guru tinggal mengisi materi dan soal langsung di aplikasi ini. Bisa dimainkan di <b>laptop maupun HP</b> untuk 30+ murid sekaligus.
           </p>
           <div className="grid">
             {features.map((f) => (
@@ -234,9 +282,9 @@ export default function App() {
 
       <section id="mabar" className="band">
         <div className="wrap">
-          <h2 className="t">⚔️ Mode Mabar, ala battle royale tapi edukatif</h2>
+          <h2 className="t">⚔️ Mode Mabar, seru satu kelas (30–100 murid)</h2>
           <p className="sub">
-            Semua murid berkumpul di lobby. Saat guru menekan <b>Mulai</b>, gerbang terbuka dan petualangan dimulai. Tidak ada saling serang: yang menang adalah yang paling banyak menjawab dengan benar dan cepat.
+            Semua murid berkumpul di lobby pakai kode 6 angka. Saat guru menekan <b>Mulai</b>, gerbang terbuka dan petualangan dimulai. Yang menang adalah yang paling banyak menjawab dengan benar dan cepat!
           </p>
           <div className="flow">
             {flow.map((f, i) => (
@@ -271,10 +319,18 @@ export default function App() {
                 ))}
               </ul>
               <p>
-                {["SD", "SMP", "SMA", "SMK", "Semua mapel", "Laptop & HP", "Kurikulum Merdeka"].map((p) => (
+                {["SD", "SMP", "SMA", "SMK", "Semua mapel", "30–100 Murid", "Laptop & HP"].map((p) => (
                   <span className="pill" key={p}>{p}</span>
                 ))}
               </p>
+              <div style={{ marginTop: 14, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button type="button" className="btn g" onClick={() => openWorkspace("classes")}>
+                  🏫 Buka Ruang Kelas &amp; Mabar
+                </button>
+                <button type="button" className="btn w" onClick={() => openWorkspace("packs")}>
+                  ✏️ Kelola Paket Soal
+                </button>
+              </div>
             </div>
             <img className="shot" src="/shot-dash.png" alt="Dashboard analisis nilai guru" />
           </div>
@@ -285,7 +341,7 @@ export default function App() {
         <div className="wrap">
           <h2 className="t">⭐ Gratis untuk mencoba, Pro untuk kelas</h2>
           <p className="sub">
-            Coba semuanya dulu tanpa akun. Saat siap membagikan ke murid dan memakai sesi live, daftar akun guru dan aktifkan kode lisensi Pro langsung di web ini.
+            Coba main solo &amp; buat soal gratis. Saat siap membuat kelas dan membuka ruang mabar 30+ murid, aktifkan lisensi Pro langsung di web ini.
           </p>
           <div className="price">
             <div className="plan wood">
@@ -297,14 +353,18 @@ export default function App() {
                 ))}
               </ul>
               <div style={{ marginTop: 14, display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <a className="btn g" href={PLAY("main")}>🎮 Main</a>
-                <a className="btn w" href={PLAY("buat")}>✏️ Buat Soal</a>
+                <button type="button" className="btn g" onClick={() => openWorkspace("solo")}>
+                  🎮 Main Solo
+                </button>
+                <button type="button" className="btn w" onClick={() => openWorkspace("packs")}>
+                  ✏️ Buat Soal
+                </button>
               </div>
             </div>
             <div className="plan wood pro">
-              <div className="ribbon">TAHUNAN</div>
+              <div className="ribbon">PRO KELAS</div>
               <h3>Pro</h3>
-              <div className="tag">Lisensi 1 tahun · aktivasi instan</div>
+              <div className="tag">Buat Kelas + Mabar 30–100 Murid</div>
               <ul className="chk">
                 {proPlan.map((t, i) => (
                   <li key={i}>{t}</li>
@@ -314,8 +374,8 @@ export default function App() {
                 <button type="button" className="btn g" onClick={() => openPortal("lisensi")}>
                   🔑 Aktivasi / Buat Lisensi
                 </button>
-                <button type="button" className="btn b" onClick={() => openPortal("akun")}>
-                  👩‍🏫 Akun Guru
+                <button type="button" className="btn b" onClick={() => openWorkspace("classes")}>
+                  🏫 Buka Kelas Pro
                 </button>
               </div>
             </div>
@@ -328,16 +388,16 @@ export default function App() {
               melalui <button type="button" className="link-btn" onClick={() => openPortal("lisensi")}>halaman lisensi</button>.
             </div>
             <div className="wood">
-              <b>Daftar akun guru</b><br />
-              di <button type="button" className="link-btn" onClick={() => openPortal("akun")}>portal akun guru</button> (email &amp; password).
+              <b>Daftar / Masuk akun guru</b><br />
+              di <button type="button" className="link-btn" onClick={() => openPortal("akun")}>portal akun guru</button>.
             </div>
             <div className="wood">
               <b>Masukkan kode lisensi</b><br />
-              di Dashboard Akun Anda atau kelola via <button type="button" className="link-btn" onClick={() => openPortal("admin")}>Panel Admin</button>.
+              di Dashboard Akun atau kelola via <button type="button" className="link-btn" onClick={() => openPortal("admin")}>Panel Admin</button>.
             </div>
             <div className="wood">
-              <b>Akun langsung aktif</b><br />
-              semua fitur Pro terbuka &amp; bukti lisensi bisa diunduh.
+              <b>Langsung Buat Kelas!</b><br />
+              buka <button type="button" className="link-btn" onClick={() => openWorkspace("classes")}>Ruang Kelas &amp; Mabar</button> untuk 30+ murid.
             </div>
           </div>
         </div>
@@ -347,7 +407,7 @@ export default function App() {
         <div className="wrap" style={{ textAlign: "center" }}>
           <h2 className="t">📲 Pasang sebagai aplikasi, layar penuh</h2>
           <p className="sub">
-            Pasang ZuperFarm di laptop atau HP. Saat dibuka dari aplikasi, game tampil <b>layar penuh</b> tanpa bilah judul, tombol jendela, maupun taskbar. Tombol ⛶ di dalam game juga bisa dipakai kapan saja.
+            Pasang ZuperFarm di laptop atau HP. Saat dibuka dari aplikasi, game tampil nyaman di layar penuh baik untuk guru maupun murid.
           </p>
           {installEvt && (
             <button className="btn g" onClick={install} style={{ marginBottom: 14 }}>📲 Pasang ZuperFarm</button>
@@ -376,8 +436,19 @@ export default function App() {
             <img src="/icon-192.png" alt="" />
             Zuper<span>Farm</span>
           </div>
-          <p>Bagian dari ekosistem <b>Zuper Guru</b> · Dibuat untuk guru dan murid Indonesia 🇮🇩</p>
+          <p>
+            Ekosistem Game Belajar Kelas · Status Server:{" "}
+            <b>
+              {health?.mode === "postgres"
+                ? "🟢 PostgreSQL Aktif (Multi-Perangkat)"
+                : "🟡 Mode Lokal (Siap Dihubungkan ke Postgres)"}
+            </b>
+          </p>
           <p className="footer-actions">
+            <button type="button" className="footer-link" onClick={() => openWorkspace("classes")}>
+              🏫 Buat Kelas &amp; Mabar
+            </button>{" "}
+            ·{" "}
             <button type="button" className="footer-link" onClick={() => openPortal("akun")}>
               👩‍🏫 Portal Akun Guru
             </button>{" "}
@@ -387,7 +458,7 @@ export default function App() {
             </button>{" "}
             ·{" "}
             <button type="button" className="footer-link" onClick={() => openPortal("admin")}>
-              👑 Panel Admin Lisensi
+              👑 Panel Admin
             </button>
           </p>
         </div>
@@ -396,21 +467,29 @@ export default function App() {
       <button
         type="button"
         className="wa"
-        onClick={() => openPortal(currentUser ? "akun" : "lisensi")}
+        onClick={() => openWorkspace(proActive ? "classes" : "solo")}
       >
-        {currentUser
-          ? proActive
-            ? "⭐ Akun Pro Aktif"
-            : "🔑 Aktivasi Pro"
-          : "🔑 Akun & Lisensi"}
+        {proActive ? "🏫 Kelas & Mabar" : "🎮 Main / Kelas"}
       </button>
 
       <PortalModal
         open={portalOpen}
         initialTab={portalTab}
         user={currentUser}
+        health={health}
         onClose={() => setPortalOpen(false)}
         onAuthChange={syncUser}
+        onOpenClassroom={() => openWorkspace("classes")}
+      />
+
+      <GameWorkspace
+        open={workspaceOpen}
+        initialView={workspaceView}
+        initialJoinCode={workspaceJoinCode}
+        user={currentUser}
+        health={health}
+        onClose={() => setWorkspaceOpen(false)}
+        onOpenPortal={openPortal}
       />
     </>
   );
