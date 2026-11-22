@@ -554,7 +554,7 @@ export default function GameWorkspace({
               )}
             </div>
           </div>
-          <button className="btn sm w" type="button" onClick={onClose}>
+          <button className="btn sm w modal-close-btn" type="button" onClick={onClose}>
             ✖ Tutup
           </button>
         </div>
@@ -1498,9 +1498,9 @@ export default function GameWorkspace({
               )}
 
               {studentSession.status === "playing" && !studentPlayer.finished && (
-                <div className="portal-grid">
-                  {/* Left: Visual Farm or Arena */}
-                  <div className="subcard">
+                <div className="portal-grid game-play-grid">
+                  {/* Left (second on mobile): Visual Farm or Arena */}
+                  <div className="subcard game-visual-card">
                     <h4 className="px" style={{ marginTop: 0, fontSize: 20 }}>
                       {studentSession.mode === "kebun"
                         ? "🌱 Kebun Ilmumu"
@@ -1561,13 +1561,13 @@ export default function GameWorkspace({
                     </div>
                   </div>
 
-                  {/* Right: Current Question */}
+                  {/* Right (first on mobile): Current Question */}
                   {(() => {
                     const qIdx = studentPlayer.answers.length;
                     const q = studentSession.questions[qIdx];
                     if (!q) return null;
                     return (
-                      <div className="subcard">
+                      <div className="subcard game-question-card">
                         <div className="badge pro" style={{ marginBottom: 8 }}>
                           Soal {qIdx + 1} dari {studentSession.totalQuestions}
                         </div>
@@ -1688,13 +1688,13 @@ export default function GameWorkspace({
           {view === "solo" && soloPack && (
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
               <div className="subcard" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
-                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                  <label style={{ fontWeight: 800, fontSize: 14 }}>
-                    Paket Latihan:{" "}
+                <div className="solo-pack-bar">
+                  <label className="solo-select-label">
+                    <span>Paket Latihan:</span>
                     <select
+                      className="solo-select"
                       value={soloPack.id}
                       onChange={(e) => resetSolo(e.target.value)}
-                      style={{ padding: "6px 10px", borderRadius: 8, border: "2px solid var(--wood2)" }}
                     >
                       {packs.map((p) => (
                         <option key={p.id} value={p.id}>
@@ -1731,8 +1731,8 @@ export default function GameWorkspace({
                   </button>
                 </div>
               ) : (
-                <div className="portal-grid">
-                  <div className="subcard">
+                <div className="portal-grid game-play-grid">
+                  <div className="subcard game-visual-card">
                     <h4 className="px" style={{ marginTop: 0, fontSize: 20 }}>
                       🌱 Kebun Ilmu Mandiri
                     </h4>
@@ -1755,7 +1755,7 @@ export default function GameWorkspace({
                     const q = soloPack.questions[soloIndex];
                     if (!q) return null;
                     return (
-                      <div className="subcard">
+                      <div className="subcard game-question-card">
                         <div className="badge pro" style={{ marginBottom: 8 }}>
                           Soal {soloIndex + 1} dari {soloPack.questions.length}
                         </div>
