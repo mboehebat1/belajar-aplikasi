@@ -122,6 +122,14 @@ export default function App() {
     return () => window.removeEventListener("beforeinstallprompt", h);
   }, []);
 
+  useEffect(() => {
+    const isOpen = portalOpen || workspaceOpen;
+    document.body.classList.toggle("modal-open", isOpen);
+    return () => {
+      document.body.classList.remove("modal-open");
+    };
+  }, [portalOpen, workspaceOpen]);
+
   const openPortal = (tab: PortalTab) => {
     setWorkspaceOpen(false);
     setPortalTab(tab);
@@ -168,7 +176,7 @@ export default function App() {
             <a href="#harga">Harga</a>
             <a href="#faq">FAQ</a>
           </div>
-          <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
+          <div className="nav-actions">
             <button
               type="button"
               className="btn sm g"
@@ -178,7 +186,7 @@ export default function App() {
             </button>
             <button
               type="button"
-              className="btn sm b"
+              className="btn sm b nav-lic-btn"
               onClick={() => openPortal("lisensi")}
             >
               🔑 Lisensi

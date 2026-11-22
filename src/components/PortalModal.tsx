@@ -449,7 +449,7 @@ export default function PortalModal({
               </span>
             </div>
           </div>
-          <button className="btn sm w" type="button" onClick={onClose} aria-label="Tutup">
+          <button className="btn sm w modal-close-btn" type="button" onClick={onClose} aria-label="Tutup">
             ✖ Tutup
           </button>
         </div>
