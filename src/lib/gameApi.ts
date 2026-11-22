@@ -2,18 +2,23 @@ import {
   activateLicenseForUser as localActivateLicense,
   adminAssignProToUser as localAdminAssignPro,
   adminDowngradeUser as localAdminDowngrade,
+  approveLicenseRequest as localApproveRequest,
   ensureSeeded,
   generateLicenses as localGenerateLicenses,
   getCurrentUser as localGetCurrentUser,
   isProActive,
+  listLicenseRequests as localListLicenseRequests,
   listLicenses as localListLicenses,
   listUsers as localListUsers,
   loginUser as localLoginUser,
   logoutUser as localLogoutUser,
   registerUser as localRegisterUser,
+  rejectLicenseRequest as localRejectRequest,
   revokeLicense as localRevokeLicense,
+  submitLicenseRequest as localSubmitLicenseRequest,
   updateUserProfile as localUpdateProfile,
   type LicenseRecord,
+  type LicenseRequestRecord,
   type UserAccount,
   type UserRole,
 } from "./authLicenseStore";
@@ -422,6 +427,7 @@ export async function apiRegister(params: {
   institution: string;
   password: string;
   role?: UserRole;
+  adminEmail?: string;
   autoLogin?: boolean;
 }) {
   await checkBackendHealth();
@@ -467,22 +473,36 @@ export async function apiActivateLicense(params: { email: string; licenseKey: st
   return localActivateLicense(params);
 }
 
-export async function apiListAvailableLicenses(): Promise<LicenseRecord[]> {
+export async function apiSubmitLicenseRequest(params: {
+  email: string;
+  packageId: string;
+  note: string;
+}): Promise<{ ok: true; request: LicenseRequestRecord } | { ok: false; error: string }> {
   await checkBackendHealth();
   if (isPostgres()) {
-    const res = await apiPost<{ ok: boolean; licenses?: LicenseRecord[] }>("/api/auth", {
-      action: "list_available_licenses",
-    });
-    return res.licenses ?? [];
+    return apiPost("/api/auth", { action: "submit_license_request", ...params });
   }
-  return localListLicenses().filter((l) => l.status === "available");
+  return localSubmitLicenseRequest(params);
 }
 
-export async function apiClaimOrGenerateLicenses(params: {
+export async function apiMyLicenseRequests(email: string): Promise<LicenseRequestRecord[]> {
+  await checkBackendHealth();
+  if (!email) return [];
+  if (isPostgres()) {
+    const res = await apiPost<{ ok: boolean; requests?: LicenseRequestRecord[] }>("/api/auth", {
+      action: "my_license_requests",
+      email,
+    });
+    return res.requests ?? [];
+  }
+  return localListLicenseRequests().filter((r) => r.userEmail === email.toLowerCase());
+}
+
+export async function apiAdminGenerateLicenses(params: {
   packageId: string;
   count: number;
   note: string;
-  createdBy: string;
+  adminEmail: string;
 }): Promise<LicenseRecord[]> {
   await checkBackendHealth();
   if (isPostgres()) {
@@ -492,12 +512,18 @@ export async function apiClaimOrGenerateLicenses(params: {
     });
     return res.licenses ?? [];
   }
-  return localGenerateLicenses(params);
+  return localGenerateLicenses({
+    packageId: params.packageId,
+    count: params.count,
+    note: params.note,
+    createdBy: params.adminEmail,
+  });
 }
 
-export async function apiAdminData(): Promise<{
+export async function apiAdminData(adminEmail: string): Promise<{
   users: UserAccount[];
   licenses: LicenseRecord[];
+  requests: LicenseRequestRecord[];
 }> {
   await checkBackendHealth();
   if (isPostgres()) {
@@ -505,18 +531,54 @@ export async function apiAdminData(): Promise<{
       ok: boolean;
       users?: UserAccount[];
       licenses?: LicenseRecord[];
-    }>("/api/auth", { action: "admin_data" });
-    return { users: res.users ?? [], licenses: res.licenses ?? [] };
+      requests?: LicenseRequestRecord[];
+    }>("/api/auth", { action: "admin_data", adminEmail });
+    return {
+      users: res.users ?? [],
+      licenses: res.licenses ?? [],
+      requests: res.requests ?? [],
+    };
   }
-  return { users: localListUsers(), licenses: localListLicenses() };
+  return {
+    users: localListUsers(),
+    licenses: localListLicenses(),
+    requests: localListLicenseRequests(),
+  };
 }
 
-export async function apiAdminRevokeLicense(key: string) {
+export async function apiAdminApproveRequest(params: {
+  requestId: string;
+  adminEmail: string;
+  adminNote?: string;
+}): Promise<
+  { ok: true; request: LicenseRequestRecord; licenseKey: string } | { ok: false; error: string }
+> {
+  await checkBackendHealth();
+  if (isPostgres()) {
+    return apiPost("/api/auth", { action: "admin_approve_request", ...params });
+  }
+  return localApproveRequest(params);
+}
+
+export async function apiAdminRejectRequest(params: {
+  requestId: string;
+  adminEmail: string;
+  adminNote?: string;
+}): Promise<{ ok: true; request: LicenseRequestRecord } | { ok: false; error: string }> {
+  await checkBackendHealth();
+  if (isPostgres()) {
+    return apiPost("/api/auth", { action: "admin_reject_request", ...params });
+  }
+  return localRejectRequest(params);
+}
+
+export async function apiAdminRevokeLicense(key: string, adminEmail: string) {
   await checkBackendHealth();
   if (isPostgres()) {
     return apiPost<{ ok: true } | { ok: false; error: string }>("/api/auth", {
       action: "admin_revoke_license",
       key,
+      adminEmail,
     });
   }
   return localRevokeLicense(key);
@@ -537,12 +599,13 @@ export async function apiAdminAssignPro(params: {
   return localAdminAssignPro(params);
 }
 
-export async function apiAdminDowngradeUser(targetEmail: string) {
+export async function apiAdminDowngradeUser(targetEmail: string, adminEmail: string) {
   await checkBackendHealth();
   if (isPostgres()) {
     return apiPost<{ ok: true } | { ok: false; error: string }>("/api/auth", {
       action: "admin_downgrade_user",
       targetEmail,
+      adminEmail,
     });
   }
   return localAdminDowngrade(targetEmail);

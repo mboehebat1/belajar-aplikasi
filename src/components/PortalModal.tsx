@@ -7,21 +7,25 @@ import {
   isProActive,
   resetAllData,
   type LicenseRecord,
+  type LicenseRequestRecord,
   type LicenseStatus,
   type UserAccount,
   type UserRole,
 } from "../lib/authLicenseStore";
 import {
   apiActivateLicense,
+  apiAdminApproveRequest,
   apiAdminAssignPro,
   apiAdminData,
   apiAdminDowngradeUser,
+  apiAdminGenerateLicenses,
+  apiAdminRejectRequest,
   apiAdminRevokeLicense,
-  apiClaimOrGenerateLicenses,
-  apiListAvailableLicenses,
   apiLogin,
   apiLogout,
+  apiMyLicenseRequests,
   apiRegister,
+  apiSubmitLicenseRequest,
   apiUpdateProfile,
   type BackendHealth,
 } from "../lib/gameApi";
@@ -63,15 +67,19 @@ export default function PortalModal({
   const [editName, setEditName] = useState("");
   const [editInst, setEditInst] = useState("");
 
-  // License activation
+  // License activation & user request form
   const [licenseInput, setLicenseInput] = useState("");
+  const [reqPackageId, setReqPackageId] = useState("yearly");
+  const [reqNote, setReqNote] = useState("");
+  const [myRequests, setMyRequests] = useState<LicenseRequestRecord[]>([]);
 
   // Admin state
   const [adminPkg, setAdminPkg] = useState("yearly");
   const [adminCount, setAdminCount] = useState(1);
   const [adminNote, setAdminNote] = useState("");
+  const [reviewNotes, setReviewNotes] = useState<Record<string, string>>({});
   const [licenseFilter, setLicenseFilter] = useState<"all" | LicenseStatus>("all");
-  const [adminSection, setAdminSection] = useState<"licenses" | "users">("licenses");
+  const [adminSection, setAdminSection] = useState<"requests" | "licenses" | "users">("requests");
 
   // Admin create user form
   const [newAccName, setNewAccName] = useState("");
@@ -81,36 +89,51 @@ export default function PortalModal({
   const [newAccRole, setNewAccRole] = useState<UserRole>("guru");
   const [newAccPro, setNewAccPro] = useState(true);
 
-  // Data snapshot
+  // Admin data snapshot
   const [users, setUsers] = useState<UserAccount[]>([]);
   const [licenses, setLicenses] = useState<LicenseRecord[]>([]);
-  const [availableOnly, setAvailableOnly] = useState<LicenseRecord[]>([]);
+  const [allRequests, setAllRequests] = useState<LicenseRequestRecord[]>([]);
   const [busy, setBusy] = useState(false);
 
   // Feedback message
   const [msg, setMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
-  const refreshData = async () => {
+  const isAdmin = user?.role === "admin";
+
+  const refreshData = async (activeUser?: UserAccount | null) => {
     await onAuthChange();
+    const targetUser = activeUser !== undefined ? activeUser : user;
     try {
-      const avail = await apiListAvailableLicenses();
-      setAvailableOnly(avail);
-      const adminSnap = await apiAdminData();
-      setUsers(adminSnap.users);
-      setLicenses(adminSnap.licenses);
+      if (targetUser) {
+        const reqs = await apiMyLicenseRequests(targetUser.email);
+        setMyRequests(reqs);
+      } else {
+        setMyRequests([]);
+      }
+      if (targetUser?.role === "admin") {
+        const adminSnap = await apiAdminData(targetUser.email);
+        setUsers(adminSnap.users);
+        setLicenses(adminSnap.licenses);
+        setAllRequests(adminSnap.requests);
+      } else {
+        setUsers([]);
+        setLicenses([]);
+        setAllRequests([]);
+      }
     } catch {
-      // Ignore transient error
+      // ignore transient error
     }
   };
 
   useEffect(() => {
     if (open) {
-      setTab(initialTab);
+      const nextTab = initialTab === "admin" && user?.role !== "admin" ? "akun" : initialTab;
+      setTab(nextTab);
       setMsg(null);
-      void refreshData();
+      void refreshData(user);
     }
-  }, [open, initialTab]);
+  }, [open, initialTab, user?.email, user?.role]);
 
   useEffect(() => {
     if (user) {
@@ -133,12 +156,26 @@ export default function PortalModal({
     return licenses.filter((l) => l.status === licenseFilter);
   }, [licenses, licenseFilter]);
 
+  const pendingRequestsCount = useMemo(
+    () => allRequests.filter((r) => r.status === "pending").length,
+    [allRequests]
+  );
+
+  const hasPendingMyRequest = useMemo(
+    () => myRequests.some((r) => r.status === "pending"),
+    [myRequests]
+  );
+
   const stats = useMemo(() => {
     const proUsers = users.filter((u) => isProActive(u)).length;
     const availLic = licenses.filter((l) => l.status === "available").length;
-    const activeLic = licenses.filter((l) => l.status === "active").length;
-    return { totalUsers: users.length, proUsers, availLic, activeLic };
-  }, [users, licenses]);
+    return {
+      totalUsers: users.length,
+      proUsers,
+      pendingReq: pendingRequestsCount,
+      availLic,
+    };
+  }, [users, licenses, pendingRequestsCount]);
 
   if (!open) return null;
 
@@ -163,7 +200,7 @@ export default function PortalModal({
         return;
       }
       setLoginPass("");
-      await refreshData();
+      await refreshData(res.user);
       setMsg({ type: "ok", text: `Berhasil masuk sebagai ${res.user.name}!` });
     } finally {
       setBusy(false);
@@ -189,27 +226,11 @@ export default function PortalModal({
       setRegEmail("");
       setRegInst("");
       setRegPass("");
-      await refreshData();
+      await refreshData(res.user);
       setMsg({
         type: "ok",
-        text: `Akun ${res.user.name} berhasil dibuat! Anda kini dapat mengaktifkan lisensi Pro.`,
+        text: `Akun ${res.user.name} berhasil dibuat! Ajukan permintaan lisensi Pro untuk menunggu persetujuan Admin.`,
       });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleQuickLogin = async (email: string, password: string) => {
-    setMsg(null);
-    setBusy(true);
-    try {
-      const res = await apiLogin(email, password);
-      if (!res.ok) {
-        setMsg({ type: "err", text: res.error });
-        return;
-      }
-      await refreshData();
-      setMsg({ type: "ok", text: `Masuk sebagai ${res.user.name} (${res.user.role.toUpperCase()}).` });
     } finally {
       setBusy(false);
     }
@@ -218,7 +239,8 @@ export default function PortalModal({
   const handleLogout = async () => {
     apiLogout();
     setEditingProfile(false);
-    await refreshData();
+    setTab("akun");
+    await refreshData(null);
     setMsg({ type: "ok", text: "Anda telah keluar dari akun." });
   };
 
@@ -237,8 +259,41 @@ export default function PortalModal({
         return;
       }
       setEditingProfile(false);
-      await refreshData();
+      await refreshData(res.user);
       setMsg({ type: "ok", text: "Profil akun berhasil diperbarui." });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleSubmitLicenseRequest = async (e: FormEvent) => {
+    e.preventDefault();
+    setMsg(null);
+    if (!user) {
+      setTab("akun");
+      setMsg({
+        type: "err",
+        text: "Silakan masuk atau daftar akun guru terlebih dahulu sebelum mengajukan lisensi.",
+      });
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await apiSubmitLicenseRequest({
+        email: user.email,
+        packageId: reqPackageId,
+        note: reqNote,
+      });
+      if (!res.ok) {
+        setMsg({ type: "err", text: res.error });
+        return;
+      }
+      setReqNote("");
+      await refreshData(user);
+      setMsg({
+        type: "ok",
+        text: `Pengajuan ${res.request.packageName} berhasil dikirim! Akun Anda akan otomatis aktif Pro setelah disetujui Admin.`,
+      });
     } finally {
       setBusy(false);
     }
@@ -251,7 +306,7 @@ export default function PortalModal({
       setTab("akun");
       setMsg({
         type: "err",
-        text: "Silakan masuk atau daftar akun terlebih dahulu sebelum mengaktifkan lisensi.",
+        text: "Silakan masuk atau daftar akun terlebih dahulu sebelum mengaktifkan kode lisensi.",
       });
       return;
     }
@@ -263,37 +318,11 @@ export default function PortalModal({
         return;
       }
       setLicenseInput("");
-      await refreshData();
+      await refreshData(res.user);
       setTab("akun");
       setMsg({
         type: "ok",
-        text: `Selamat! Lisensi ${res.license.key} (${res.license.planName}) berhasil diaktifkan sampai ${formatDateID(res.license.expiresAt)}.`,
-      });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleClaimPackage = async (pkgId: string) => {
-    setMsg(null);
-    setBusy(true);
-    try {
-      const created = await apiClaimOrGenerateLicenses({
-        packageId: pkgId,
-        count: 1,
-        note: user ? `Dipesan oleh ${user.email}` : "Dipesan melalui halaman Lisensi",
-        createdBy: user?.email ?? "self-service",
-      });
-      if (created.length === 0) return;
-      const newKey = created[0].key;
-      setLicenseInput(newKey);
-      await refreshData();
-      void copyText(newKey);
-      setMsg({
-        type: "ok",
-        text: user
-          ? `Kode lisensi baru dibuat: ${newKey} (tersalin). Klik "Aktifkan Lisensi Sekarang" di atas.`
-          : `Kode lisensi baru dibuat: ${newKey} (tersalin). Masuk/daftar akun dulu lalu aktifkan kode ini.`,
+        text: `Lisensi ${res.license.key} (${res.license.planName}) berhasil diaktifkan sampai ${formatDateID(res.license.expiresAt)}.`,
       });
     } finally {
       setBusy(false);
@@ -312,19 +341,67 @@ export default function PortalModal({
     URL.revokeObjectURL(url);
   };
 
-  const handleAdminGenerate = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!user || user.role !== "admin") return;
+  const handleAdminApprove = async (requestId: string) => {
+    if (!user || !isAdmin) return;
+    setMsg(null);
     setBusy(true);
     try {
-      const created = await apiClaimOrGenerateLicenses({
+      const res = await apiAdminApproveRequest({
+        requestId,
+        adminEmail: user.email,
+        adminNote: reviewNotes[requestId] ?? "",
+      });
+      if (!res.ok) {
+        setMsg({ type: "err", text: res.error });
+        return;
+      }
+      await refreshData(user);
+      setMsg({
+        type: "ok",
+        text: `Permintaan disetujui! Akun ${res.request.userEmail} kini Pro dengan kode ${res.licenseKey}.`,
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleAdminReject = async (requestId: string) => {
+    if (!user || !isAdmin) return;
+    setMsg(null);
+    setBusy(true);
+    try {
+      const res = await apiAdminRejectRequest({
+        requestId,
+        adminEmail: user.email,
+        adminNote: reviewNotes[requestId] ?? "",
+      });
+      if (!res.ok) {
+        setMsg({ type: "err", text: res.error });
+        return;
+      }
+      await refreshData(user);
+      setMsg({
+        type: "ok",
+        text: `Permintaan dari ${res.request.userEmail} telah ditolak.`,
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleAdminGenerate = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!user || !isAdmin) return;
+    setBusy(true);
+    try {
+      const created = await apiAdminGenerateLicenses({
         packageId: adminPkg,
         count: adminCount,
         note: adminNote,
-        createdBy: user.email,
+        adminEmail: user.email,
       });
       setAdminNote("");
-      await refreshData();
+      await refreshData(user);
       if (created.length === 1) {
         void copyText(created[0].key);
         setMsg({
@@ -344,7 +421,7 @@ export default function PortalModal({
 
   const handleAdminCreateAccount = async (e: FormEvent) => {
     e.preventDefault();
-    if (!user || user.role !== "admin") return;
+    if (!user || !isAdmin) return;
     setMsg(null);
     setBusy(true);
     try {
@@ -354,6 +431,7 @@ export default function PortalModal({
         institution: newAccInst,
         password: newAccPass,
         role: newAccRole,
+        adminEmail: user.email,
         autoLogin: false,
       });
       if (!res.ok) {
@@ -377,7 +455,7 @@ export default function PortalModal({
       setNewAccEmail("");
       setNewAccInst("");
       setNewAccPass("");
-      await refreshData();
+      await refreshData(user);
       setMsg({
         type: "ok",
         text: `Akun ${res.user.email} berhasil dibuat${extra}.`,
@@ -388,17 +466,18 @@ export default function PortalModal({
   };
 
   const handleRevoke = async (key: string) => {
-    const res = await apiAdminRevokeLicense(key);
+    if (!user || !isAdmin) return;
+    const res = await apiAdminRevokeLicense(key, user.email);
     if (!res.ok) {
       setMsg({ type: "err", text: res.error });
       return;
     }
-    await refreshData();
+    await refreshData(user);
     setMsg({ type: "ok", text: `Lisensi ${key} telah dicabut.` });
   };
 
   const handleAdminAssignPro = async (targetEmail: string) => {
-    if (!user || user.role !== "admin") return;
+    if (!user || !isAdmin) return;
     const res = await apiAdminAssignPro({
       targetEmail,
       adminEmail: user.email,
@@ -408,7 +487,7 @@ export default function PortalModal({
       setMsg({ type: "err", text: res.error });
       return;
     }
-    await refreshData();
+    await refreshData(user);
     setMsg({
       type: "ok",
       text: `Akun ${targetEmail} kini Pro dengan kode ${res.license.key}.`,
@@ -416,19 +495,21 @@ export default function PortalModal({
   };
 
   const handleAdminDowngrade = async (targetEmail: string) => {
-    const res = await apiAdminDowngradeUser(targetEmail);
+    if (!user || !isAdmin) return;
+    const res = await apiAdminDowngradeUser(targetEmail, user.email);
     if (!res.ok) {
       setMsg({ type: "err", text: res.error });
       return;
     }
-    await refreshData();
+    await refreshData(user);
     setMsg({ type: "ok", text: `Akun ${targetEmail} dikembalikan ke paket Gratis.` });
   };
 
   const handleResetDemo = async () => {
     if (!window.confirm("Reset data lokal kembali ke pengaturan awal?")) return;
     await resetAllData();
-    await refreshData();
+    await refreshData(null);
+    setTab("akun");
     setMsg({ type: "ok", text: "Data lokal telah direset ke pengaturan awal." });
   };
 
@@ -442,14 +523,29 @@ export default function PortalModal({
             <h2 className="px" style={{ margin: 0, fontSize: 26 }}>
               🌾 Portal Akun &amp; Lisensi ZuperFarm
             </h2>
-            <div className="muted" style={{ fontSize: 13, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginTop: 2 }}>
-              <span>Kelola akun guru, aktivasi lisensi Pro, dan panel admin</span>
+            <div
+              className="muted"
+              style={{
+                fontSize: 13,
+                display: "flex",
+                gap: 8,
+                alignItems: "center",
+                flexWrap: "wrap",
+                marginTop: 2,
+              }}
+            >
+              <span>Kelola akun guru &amp; pengajuan lisensi Pro</span>
               <span className={`badge ${health?.mode === "postgres" ? "status-available" : "free"}`}>
                 {health?.mode === "postgres" ? "🟢 Server Postgres Aktif" : "🟡 Mode Lokal"}
               </span>
             </div>
           </div>
-          <button className="btn sm w modal-close-btn" type="button" onClick={onClose} aria-label="Tutup">
+          <button
+            className="btn sm w modal-close-btn"
+            type="button"
+            onClick={onClose}
+            aria-label="Tutup"
+          >
             ✖ Tutup
           </button>
         </div>
@@ -475,16 +571,18 @@ export default function PortalModal({
           >
             🔑 Lisensi Pro
           </button>
-          <button
-            type="button"
-            className={`btn sm ${tab === "admin" ? "g" : "w"}`}
-            onClick={() => {
-              setTab("admin");
-              setMsg(null);
-            }}
-          >
-            👑 Panel Admin
-          </button>
+          {isAdmin && (
+            <button
+              type="button"
+              className={`btn sm ${tab === "admin" ? "g" : "w"}`}
+              onClick={() => {
+                setTab("admin");
+                setMsg(null);
+              }}
+            >
+              👑 Panel Admin{pendingRequestsCount > 0 ? ` (${pendingRequestsCount})` : ""}
+            </button>
+          )}
         </div>
 
         {msg && (
@@ -497,174 +595,138 @@ export default function PortalModal({
         <div className="modal-body">
           {/* ================= TAB 1: AKUN / AUTH ================= */}
           {tab === "akun" && !user && (
-            <div className="portal-grid">
-              <div className="subcard">
-                <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-                  <button
-                    type="button"
-                    className={`btn sm ${authMode === "login" ? "" : "w"}`}
-                    onClick={() => {
-                      setAuthMode("login");
-                      setMsg(null);
-                    }}
-                  >
-                    Masuk Akun
-                  </button>
-                  <button
-                    type="button"
-                    className={`btn sm ${authMode === "register" ? "" : "w"}`}
-                    onClick={() => {
-                      setAuthMode("register");
-                      setMsg(null);
-                    }}
-                  >
-                    Daftar Akun Baru
-                  </button>
-                </div>
-
-                {authMode === "login" ? (
-                  <form className="form-stack" onSubmit={handleLogin}>
-                    <label>
-                      Email Akun
-                      <input
-                        type="email"
-                        required
-                        value={loginEmail}
-                        onChange={(e) => setLoginEmail(e.target.value)}
-                        placeholder="nama@sekolah.sch.id"
-                      />
-                    </label>
-                    <label>
-                      Password
-                      <input
-                        type="password"
-                        required
-                        value={loginPass}
-                        onChange={(e) => setLoginPass(e.target.value)}
-                        placeholder="Minimal 6 karakter"
-                      />
-                    </label>
-                    <button className="btn g" type="submit" disabled={busy}>
-                      {busy ? "Memproses..." : "🔓 Masuk Sekarang"}
-                    </button>
-                  </form>
-                ) : (
-                  <form className="form-stack" onSubmit={handleRegister}>
-                    <label>
-                      Nama Lengkap / Guru
-                      <input
-                        type="text"
-                        required
-                        value={regName}
-                        onChange={(e) => setRegName(e.target.value)}
-                        placeholder="Contoh: Siti Rahmawati, S.Pd."
-                      />
-                    </label>
-                    <label>
-                      Email
-                      <input
-                        type="email"
-                        required
-                        value={regEmail}
-                        onChange={(e) => setRegEmail(e.target.value)}
-                        placeholder="nama@sekolah.sch.id"
-                      />
-                    </label>
-                    <label>
-                      Sekolah / Kampus / Instansi
-                      <input
-                        type="text"
-                        value={regInst}
-                        onChange={(e) => setRegInst(e.target.value)}
-                        placeholder="Contoh: SMPN 1 Malang"
-                      />
-                    </label>
-                    <label>
-                      Password
-                      <input
-                        type="password"
-                        required
-                        minLength={6}
-                        value={regPass}
-                        onChange={(e) => setRegPass(e.target.value)}
-                        placeholder="Minimal 6 karakter"
-                      />
-                    </label>
-                    <button className="btn g" type="submit" disabled={busy}>
-                      {busy ? "Memproses..." : "🌱 Daftar Akun Guru"}
-                    </button>
-                  </form>
-                )}
+            <div className="subcard" style={{ maxWidth: 480, margin: "0 auto" }}>
+              <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+                <button
+                  type="button"
+                  className={`btn sm ${authMode === "login" ? "" : "w"}`}
+                  style={{ flex: 1 }}
+                  onClick={() => {
+                    setAuthMode("login");
+                    setMsg(null);
+                  }}
+                >
+                  Masuk Akun
+                </button>
+                <button
+                  type="button"
+                  className={`btn sm ${authMode === "register" ? "" : "w"}`}
+                  style={{ flex: 1 }}
+                  onClick={() => {
+                    setAuthMode("register");
+                    setMsg(null);
+                  }}
+                >
+                  Daftar Akun Baru
+                </button>
               </div>
 
-              <div className="subcard">
-                <h3 className="px" style={{ marginTop: 0, fontSize: 22 }}>
-                  ⚡ Akun Siap Pakai
-                </h3>
-                <p style={{ marginTop: 0, fontSize: 14 }}>
-                  Masuk instan menggunakan akun bawaan untuk langsung membuka fitur **Buat Kelas** dan **Ruang Mabar 30+ Murid**:
-                </p>
-
-                <div className="demo-box">
-                  <div>
-                    <b>👑 Admin (Pro + Buat Kelas + Lisensi)</b>
-                    <div className="mono">admin@zuperfarm.local / admin123</div>
-                  </div>
-                  <button
-                    type="button"
-                    className="btn sm"
-                    disabled={busy}
-                    onClick={() => handleQuickLogin("admin@zuperfarm.local", "admin123")}
-                  >
-                    Masuk Admin
+              {authMode === "login" ? (
+                <form className="form-stack" onSubmit={handleLogin}>
+                  <label>
+                    Email Akun
+                    <input
+                      type="email"
+                      required
+                      value={loginEmail}
+                      onChange={(e) => setLoginEmail(e.target.value)}
+                      placeholder="nama@sekolah.sch.id"
+                    />
+                  </label>
+                  <label>
+                    Password
+                    <input
+                      type="password"
+                      required
+                      value={loginPass}
+                      onChange={(e) => setLoginPass(e.target.value)}
+                      placeholder="Masukkan password"
+                    />
+                  </label>
+                  <button className="btn g" type="submit" disabled={busy}>
+                    {busy ? "Memproses..." : "🔓 Masuk Sekarang"}
                   </button>
-                </div>
-
-                <div className="demo-box">
-                  <div>
-                    <b>👩‍🏫 Guru Demo (Paket Gratis)</b>
-                    <div className="mono">guru@zuperfarm.local / guru123</div>
-                  </div>
-                  <button
-                    type="button"
-                    className="btn sm b"
-                    disabled={busy}
-                    onClick={() => handleQuickLogin("guru@zuperfarm.local", "guru123")}
-                  >
-                    Masuk Guru
+                </form>
+              ) : (
+                <form className="form-stack" onSubmit={handleRegister}>
+                  <label>
+                    Nama Lengkap / Guru
+                    <input
+                      type="text"
+                      required
+                      value={regName}
+                      onChange={(e) => setRegName(e.target.value)}
+                      placeholder="Contoh: Siti Rahmawati, S.Pd."
+                    />
+                  </label>
+                  <label>
+                    Email
+                    <input
+                      type="email"
+                      required
+                      value={regEmail}
+                      onChange={(e) => setRegEmail(e.target.value)}
+                      placeholder="nama@sekolah.sch.id"
+                    />
+                  </label>
+                  <label>
+                    Sekolah / Kampus / Instansi
+                    <input
+                      type="text"
+                      value={regInst}
+                      onChange={(e) => setRegInst(e.target.value)}
+                      placeholder="Contoh: SMPN 1 Malang"
+                    />
+                  </label>
+                  <label>
+                    Password
+                    <input
+                      type="password"
+                      required
+                      minLength={6}
+                      value={regPass}
+                      onChange={(e) => setRegPass(e.target.value)}
+                      placeholder="Minimal 6 karakter"
+                    />
+                  </label>
+                  <button className="btn g" type="submit" disabled={busy}>
+                    {busy ? "Memproses..." : "🌱 Daftar Akun Guru"}
                   </button>
-                </div>
-
-                {licenseInput && (
-                  <div className="alert-box ok" style={{ marginTop: 12 }}>
-                    <span>🔑</span>
-                    <span>
-                      Kode <b>{licenseInput}</b> sudah disiapkan. Setelah masuk/daftar, Anda bisa langsung mengaktifkannya!
-                    </span>
-                  </div>
-                )}
-              </div>
+                </form>
+              )}
             </div>
           )}
 
           {tab === "akun" && user && (
             <div className="portal-grid">
               <div className="subcard">
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, flexWrap: "wrap" }}>
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "flex-start",
+                    gap: 10,
+                    flexWrap: "wrap",
+                  }}
+                >
                   <div>
                     <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 6 }}>
                       <span className={`badge ${proActive ? "pro" : "free"}`}>
                         {proActive ? "⭐ PRO AKTIF" : "🌱 PAKET GRATIS"}
                       </span>
                       <span className="badge role">
-                        {user.role === "admin" ? "👑 ADMIN" : "👩‍🏫 GURU"}
+                        {isAdmin ? "👑 ADMIN" : "👩‍🏫 GURU"}
                       </span>
                     </div>
                     <h3 className="px" style={{ margin: "2px 0", fontSize: 24 }}>
                       {user.name}
                     </h3>
-                    <div className="mono" style={{ fontSize: 14 }}>{user.email}</div>
-                    <div className="muted" style={{ fontSize: 14 }}>🏫 {user.institution}</div>
+                    <div className="mono" style={{ fontSize: 14 }}>
+                      {user.email}
+                    </div>
+                    <div className="muted" style={{ fontSize: 14 }}>
+                      🏫 {user.institution}
+                    </div>
                   </div>
                   <div style={{ display: "flex", gap: 6 }}>
                     <button
@@ -681,7 +743,15 @@ export default function PortalModal({
                 </div>
 
                 {editingProfile && (
-                  <form className="form-stack" onSubmit={handleSaveProfile} style={{ marginTop: 14, paddingTop: 12, borderTop: "2px dashed var(--wood2)" }}>
+                  <form
+                    className="form-stack"
+                    onSubmit={handleSaveProfile}
+                    style={{
+                      marginTop: 14,
+                      paddingTop: 12,
+                      borderTop: "2px dashed var(--wood2)",
+                    }}
+                  >
                     <label>
                       Nama Lengkap
                       <input
@@ -711,7 +781,7 @@ export default function PortalModal({
                       🏫 Akses Pro Terbuka Penuh!
                     </h4>
                     <p style={{ margin: "0 0 10px", fontSize: 14 }}>
-                      Anda bisa langsung membuat kelas, menyusun paket soal, dan membuka ruang mabar kode 6 angka untuk <b>30+ murid sekaligus</b>.
+                      Anda bisa membuat kelas, menyusun paket soal, dan membuka ruang mabar kode 6 angka untuk <b>30–100 murid sekaligus</b>.
                     </p>
                     <button
                       type="button"
@@ -758,43 +828,60 @@ export default function PortalModal({
                     </div>
 
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 14 }}>
-                      <button type="button" className="btn sm b" onClick={handleDownloadCertificate}>
+                      <button
+                        type="button"
+                        className="btn sm b"
+                        onClick={handleDownloadCertificate}
+                      >
                         📄 Unduh Bukti Lisensi
                       </button>
-                      <button type="button" className="btn sm w" onClick={() => setTab("lisensi")}>
+                      <button
+                        type="button"
+                        className="btn sm w"
+                        onClick={() => setTab("lisensi")}
+                      >
                         ➕ Perpanjang Lisensi
                       </button>
                     </div>
                   </div>
                 ) : (
                   <div>
+                    {hasPendingMyRequest && (
+                      <div className="alert-box ok" style={{ marginBottom: 12 }}>
+                        <span>⏳</span>
+                        <span>
+                          Pengajuan lisensi Pro Anda sedang <b>menunggu persetujuan Admin</b>. Setelah disetujui, akun otomatis berubah menjadi Pro.
+                        </span>
+                      </div>
+                    )}
+
                     <p style={{ marginTop: 0, fontSize: 14 }}>
-                      Akun Anda saat ini masih berada di <b>Paket Gratis</b>. Masukkan kode lisensi untuk langsung membuka fitur <b>Buat Kelas &amp; Mabar 30+ Murid</b>!
+                      Untuk mengaktifkan fitur <b>Buat Kelas &amp; Mabar 30+ Murid</b>, ajukan lisensi Pro untuk ditinjau Admin atau masukkan kode lisensi resmi dari Admin:
                     </p>
                     <form className="form-stack" onSubmit={handleActivateLicense}>
                       <label>
-                        Kode Lisensi Pro
+                        Kode Lisensi Resmi dari Admin
                         <input
                           type="text"
                           required
                           value={licenseInput}
                           onChange={(e) => setLicenseInput(e.target.value.toUpperCase())}
-                          placeholder="ZFARM-PRO-2026-8801"
+                          placeholder="ZFARM-PRO-XXXX-XXXX"
                           className="mono"
                         />
                       </label>
                       <button className="btn g" type="submit" disabled={busy}>
-                        🔓 Aktifkan Lisensi Pro
+                        🔓 Aktifkan Kode Lisensi
                       </button>
                     </form>
-                    <div style={{ marginTop: 10, fontSize: 13 }}>
-                      Belum punya kode?{" "}
+                    <div style={{ marginTop: 12 }}>
                       <button
                         type="button"
-                        className="link-btn"
+                        className="btn sm b"
+                        style={{ width: "100%" }}
                         onClick={() => setTab("lisensi")}
                       >
-                        Lihat &amp; ambil kode lisensi di sini ▸
+                        📩 Ajukan Persetujuan Lisensi Pro ke Admin
                       </button>
                     </div>
                   </div>
@@ -803,12 +890,121 @@ export default function PortalModal({
             </div>
           )}
 
-          {/* ================= TAB 2: LISENSI PRO ================= */}
+          {/* ================= TAB 2: PENGAJUAN & AKTIVASI LISENSI ================= */}
           {tab === "lisensi" && (
             <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-              <div className="subcard">
+              <form className="subcard" onSubmit={handleSubmitLicenseRequest}>
                 <h3 className="px" style={{ marginTop: 0, fontSize: 22 }}>
-                  🔓 Aktivasi Kode Lisensi
+                  📩 Ajukan Lisensi Pro (Persetujuan Admin)
+                </h3>
+                <p style={{ marginTop: 0, fontSize: 14 }}>
+                  Pilih paket lisensi yang diinginkan lalu kirim pengajuan. <b>Admin akan meninjau dan menyetujui pengajuan Anda</b> sebelum akses Pro diaktifkan.
+                </p>
+
+                <div className="pkg-grid" style={{ marginBottom: 14 }}>
+                  {LICENSE_PACKAGES.map((pkg) => {
+                    const selected = reqPackageId === pkg.id;
+                    return (
+                      <div
+                        key={pkg.id}
+                        className="subcard pkg-card"
+                        style={{
+                          cursor: "pointer",
+                          borderColor: selected ? "#4c9a2a" : "var(--wood2)",
+                          background: selected ? "#eef9e4" : "#fff8e3",
+                        }}
+                        onClick={() => setReqPackageId(pkg.id)}
+                      >
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <span className="badge pro">{pkg.durationDays} Hari</span>
+                          {selected && <span className="badge status-available">✓ Dipilih</span>}
+                        </div>
+                        <h4 className="px" style={{ margin: "6px 0 2px", fontSize: 19 }}>
+                          {pkg.name}
+                        </h4>
+                        <div style={{ fontWeight: 900, color: "#8a3d12", marginBottom: 6 }}>
+                          {pkg.priceLabel}
+                        </div>
+                        <p style={{ margin: 0, fontSize: 13 }}>{pkg.description}</p>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="form-stack">
+                  <label>
+                    Catatan / No. WhatsApp / Info Sekolah (untuk verifikasi Admin)
+                    <input
+                      type="text"
+                      required
+                      value={reqNote}
+                      onChange={(e) => setReqNote(e.target.value)}
+                      placeholder="Contoh: WA 0812xxxx - Guru Kelas 5 SDN 1 Malang"
+                    />
+                  </label>
+                  <button
+                    className="btn g"
+                    type="submit"
+                    disabled={busy || hasPendingMyRequest}
+                  >
+                    {!user
+                      ? "🔐 Masuk / Daftar untuk Mengajukan"
+                      : hasPendingMyRequest
+                        ? "⏳ Pengajuan Sebelumnya Masih Menunggu Admin"
+                        : "📩 Kirim Pengajuan Lisensi ke Admin"}
+                  </button>
+                </div>
+              </form>
+
+              {user && myRequests.length > 0 && (
+                <div className="subcard">
+                  <h3 className="px" style={{ marginTop: 0, fontSize: 20 }}>
+                    📋 Status Pengajuan Lisensi Saya
+                  </h3>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {myRequests.map((r) => (
+                      <div className="avail-item" key={r.id}>
+                        <div>
+                          <b>{r.packageName}</b>{" "}
+                          <span
+                            className={`badge ${
+                              r.status === "approved"
+                                ? "status-available"
+                                : r.status === "rejected"
+                                  ? "status-revoked"
+                                  : "pro"
+                            }`}
+                          >
+                            {r.status === "pending"
+                              ? "⏳ Menunggu Admin"
+                              : r.status === "approved"
+                                ? "✅ Disetujui"
+                                : "❌ Ditolak"}
+                          </span>
+                          <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>
+                            Diajukan: {formatDateID(r.createdAt)}
+                            {r.note ? ` · ${r.note}` : ""}
+                          </div>
+                          {r.adminNote && (
+                            <div style={{ fontSize: 12.5, marginTop: 2 }}>
+                              <b>Catatan Admin:</b> {r.adminNote}
+                            </div>
+                          )}
+                          {r.approvedLicenseKey && (
+                            <div className="mono" style={{ fontSize: 12.5, marginTop: 2, fontWeight: 900 }}>
+                              Kode Aktif: {r.approvedLicenseKey}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="subcard">
+                <h3 className="px" style={{ marginTop: 0, fontSize: 20 }}>
+                  🔓 Sudah Menerima Kode Lisensi dari Admin?
                 </h3>
                 <form className="inline-activate" onSubmit={handleActivateLicense}>
                   <input
@@ -816,160 +1012,73 @@ export default function PortalModal({
                     required
                     value={licenseInput}
                     onChange={(e) => setLicenseInput(e.target.value.toUpperCase())}
-                    placeholder="Contoh: ZFARM-PRO-2026-8801"
+                    placeholder="Masukkan kode lisensi resmi dari Admin"
                     className="mono"
                   />
                   <button className="btn g" type="submit" disabled={busy}>
-                    {user ? "🔓 Aktifkan Lisensi Sekarang" : "🔐 Masuk & Aktifkan"}
+                    {user ? "🔓 Aktifkan Kode" : "🔐 Masuk & Aktifkan"}
                   </button>
                 </form>
-                <div className="muted" style={{ fontSize: 13, marginTop: 6 }}>
-                  {user
-                    ? `Aktifkan untuk akun: ${user.name} (${user.email})`
-                    : "Masukkan kode lisensi, lalu masuk/daftar akun guru untuk mengaktifkannya."}
-                </div>
-              </div>
-
-              <div>
-                <h3 className="px" style={{ margin: "0 0 10px", fontSize: 22 }}>
-                  📦 Pilih Paket &amp; Buat Kode Lisensi
-                </h3>
-                <div className="pkg-grid">
-                  {LICENSE_PACKAGES.map((pkg) => (
-                    <div className="subcard pkg-card" key={pkg.id}>
-                      <div className="badge pro" style={{ alignSelf: "flex-start" }}>
-                        {pkg.durationDays} Hari
-                      </div>
-                      <h4 className="px" style={{ margin: "6px 0 2px", fontSize: 20 }}>
-                        {pkg.name}
-                      </h4>
-                      <div style={{ fontWeight: 900, color: "#8a3d12", marginBottom: 6 }}>
-                        {pkg.priceLabel}
-                      </div>
-                      <p style={{ margin: "0 0 12px", fontSize: 14, flex: 1 }}>
-                        {pkg.description}
-                      </p>
-                      <button
-                        type="button"
-                        className="btn sm"
-                        disabled={busy}
-                        onClick={() => handleClaimPackage(pkg.id)}
-                      >
-                        ⚡ Buat Kode Lisensi
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="subcard">
-                <h3 className="px" style={{ marginTop: 0, fontSize: 20 }}>
-                  🎫 Kode Lisensi Tersedia ({availableOnly.length})
-                </h3>
-                {availableOnly.length === 0 ? (
-                  <p className="muted" style={{ margin: 0 }}>
-                    Belum ada kode tersedia. Klik "Buat Kode Lisensi" pada paket di atas untuk membuat kode baru.
-                  </p>
-                ) : (
-                  <div className="avail-list">
-                    {availableOnly.slice(0, 6).map((lic) => (
-                      <div className="avail-item" key={lic.key}>
-                        <div>
-                          <div className="mono" style={{ fontWeight: 900 }}>{lic.key}</div>
-                          <div className="muted" style={{ fontSize: 12 }}>
-                            {lic.planName} · {lic.durationDays} hari
-                          </div>
-                        </div>
-                        <div style={{ display: "flex", gap: 6 }}>
-                          <button
-                            type="button"
-                            className="btn sm w"
-                            onClick={() => copyText(lic.key)}
-                          >
-                            {copiedKey === lic.key ? "✓" : "📋"}
-                          </button>
-                          <button
-                            type="button"
-                            className="btn sm g"
-                            onClick={() => {
-                              setLicenseInput(lic.key);
-                              setMsg({
-                                type: "ok",
-                                text: `Kode ${lic.key} dimasukkan ke kolom aktivasi di atas.`,
-                              });
-                            }}
-                          >
-                            Pakai
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
               </div>
             </div>
           )}
 
-          {/* ================= TAB 3: PANEL ADMIN ================= */}
-          {tab === "admin" && (!user || user.role !== "admin") && (
-            <div className="subcard" style={{ textAlign: "center", padding: 28 }}>
-              <div style={{ fontSize: 44 }}>👑</div>
-              <h3 className="px" style={{ fontSize: 26, margin: "8px 0" }}>
-                Akses Khusus Admin Lisensi
-              </h3>
-              <p style={{ maxWidth: 500, margin: "0 auto 16px" }}>
-                Masuk menggunakan akun Admin untuk membuat kode lisensi massal, mencabut lisensi, membuat akun guru baru, dan mengelola status Pro semua pengguna.
-              </p>
-              <div className="mono" style={{ marginBottom: 16 }}>
-                admin@zuperfarm.local · admin123
-              </div>
-              <button
-                type="button"
-                className="btn g"
-                disabled={busy}
-                onClick={() => handleQuickLogin("admin@zuperfarm.local", "admin123")}
-              >
-                👑 Masuk sebagai Admin Sekarang
-              </button>
-            </div>
-          )}
-
-          {tab === "admin" && user && user.role === "admin" && (
+          {/* ================= TAB 3: PANEL ADMIN (HANYA UNTUK ADMIN) ================= */}
+          {tab === "admin" && isAdmin && user && (
             <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
               <div className="stats-grid">
+                <div className="stat-box">
+                  <span className="muted">Menunggu Persetujuan</span>
+                  <b className="px" style={{ color: "#c9621f" }}>
+                    {stats.pendingReq}
+                  </b>
+                </div>
                 <div className="stat-box">
                   <span className="muted">Total Akun</span>
                   <b className="px">{stats.totalUsers}</b>
                 </div>
                 <div className="stat-box">
                   <span className="muted">Akun Pro Aktif</span>
-                  <b className="px" style={{ color: "#2d7a16" }}>{stats.proUsers}</b>
+                  <b className="px" style={{ color: "#2d7a16" }}>
+                    {stats.proUsers}
+                  </b>
                 </div>
                 <div className="stat-box">
-                  <span className="muted">Lisensi Tersedia</span>
-                  <b className="px" style={{ color: "#8a3d12" }}>{stats.availLic}</b>
-                </div>
-                <div className="stat-box">
-                  <span className="muted">Lisensi Terpakai</span>
-                  <b className="px">{stats.activeLic}</b>
+                  <span className="muted">Kode Tersedia</span>
+                  <b className="px">{stats.availLic}</b>
                 </div>
               </div>
 
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "space-between", alignItems: "center" }}>
-                <div style={{ display: "flex", gap: 8 }}>
+              <div
+                style={{
+                  display: "flex",
+                  gap: 8,
+                  flexWrap: "wrap",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                }}
+              >
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    className={`btn sm ${adminSection === "requests" ? "" : "w"}`}
+                    onClick={() => setAdminSection("requests")}
+                  >
+                    📩 Persetujuan ({pendingRequestsCount})
+                  </button>
                   <button
                     type="button"
                     className={`btn sm ${adminSection === "licenses" ? "" : "w"}`}
                     onClick={() => setAdminSection("licenses")}
                   >
-                    🔑 Kelola Lisensi ({licenses.length})
+                    🔑 Lisensi ({licenses.length})
                   </button>
                   <button
                     type="button"
                     className={`btn sm ${adminSection === "users" ? "" : "w"}`}
                     onClick={() => setAdminSection("users")}
                   >
-                    👥 Kelola Akun ({users.length})
+                    👥 Akun ({users.length})
                   </button>
                 </div>
                 {health?.mode !== "postgres" && (
@@ -979,11 +1088,103 @@ export default function PortalModal({
                 )}
               </div>
 
-              {adminSection === "licenses" ? (
+              {adminSection === "requests" && (
+                <div className="subcard">
+                  <h3 className="px" style={{ marginTop: 0, fontSize: 20 }}>
+                    📩 Daftar Pengajuan Persetujuan Lisensi
+                  </h3>
+                  {allRequests.length === 0 ? (
+                    <p className="muted" style={{ margin: 0 }}>
+                      Belum ada pengajuan lisensi dari guru.
+                    </p>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                      {allRequests.map((req) => (
+                        <div className="demo-box" key={req.id} style={{ marginTop: 0, alignItems: "stretch", flexDirection: "column" }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                            <div>
+                              <b>{req.userName}</b>{" "}
+                              <span className="mono" style={{ fontSize: 12 }}>
+                                ({req.userEmail})
+                              </span>
+                              <div className="muted" style={{ fontSize: 12 }}>
+                                🏫 {req.institution} · 📦 <b>{req.packageName}</b> ({req.durationDays} hari)
+                              </div>
+                              {req.note && (
+                                <div style={{ fontSize: 13, marginTop: 4 }}>
+                                  📝 <b>Catatan Pemohon:</b> {req.note}
+                                </div>
+                              )}
+                            </div>
+                            <span
+                              className={`badge ${
+                                req.status === "approved"
+                                  ? "status-available"
+                                  : req.status === "rejected"
+                                    ? "status-revoked"
+                                    : "pro"
+                              }`}
+                              style={{ alignSelf: "flex-start" }}
+                            >
+                              {req.status === "pending"
+                                ? "⏳ MENUNGGU"
+                                : req.status === "approved"
+                                  ? "✅ DISETUJUI"
+                                  : "❌ DITOLAK"}
+                            </span>
+                          </div>
+
+                          {req.status === "pending" ? (
+                            <div className="inline-activate" style={{ marginTop: 8 }}>
+                              <input
+                                type="text"
+                                value={reviewNotes[req.id] ?? ""}
+                                onChange={(e) =>
+                                  setReviewNotes((prev) => ({
+                                    ...prev,
+                                    [req.id]: e.target.value,
+                                  }))
+                                }
+                                placeholder="Catatan admin (opsional, mis. 'Pembayaran terverifikasi')"
+                              />
+                              <div style={{ display: "flex", gap: 6 }}>
+                                <button
+                                  type="button"
+                                  className="btn sm g"
+                                  disabled={busy}
+                                  onClick={() => handleAdminApprove(req.id)}
+                                >
+                                  ✅ Setujui &amp; Aktifkan Pro
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn sm danger"
+                                  disabled={busy}
+                                  onClick={() => handleAdminReject(req.id)}
+                                >
+                                  ❌ Tolak
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="muted" style={{ fontSize: 12 }}>
+                              Diproses oleh {req.reviewedBy} · {formatDateID(req.reviewedAt)}
+                              {req.approvedLicenseKey ? ` · Kode: ${req.approvedLicenseKey}` : ""}
+                              {req.adminNote ? ` · "${req.adminNote}"` : ""}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {adminSection === "licenses" && (
                 <>
                   <form className="subcard" onSubmit={handleAdminGenerate}>
                     <h3 className="px" style={{ marginTop: 0, fontSize: 20 }}>
-                      ⚡ Generator Kode Lisensi Baru
+                      ⚡ Terbitkan Kode Lisensi Manual (Khusus Admin)
                     </h3>
                     <div className="admin-gen-row">
                       <label>
@@ -1007,7 +1208,7 @@ export default function PortalModal({
                         />
                       </label>
                       <label style={{ flex: 2 }}>
-                        Catatan / Pembeli
+                        Catatan / Nama Penerima
                         <input
                           type="text"
                           value={adminNote}
@@ -1015,8 +1216,13 @@ export default function PortalModal({
                           placeholder="Contoh: Ibu Rina - SMAN 3"
                         />
                       </label>
-                      <button className="btn g" type="submit" disabled={busy} style={{ alignSelf: "flex-end" }}>
-                        ⚡ Generate
+                      <button
+                        className="btn g"
+                        type="submit"
+                        disabled={busy}
+                        style={{ alignSelf: "flex-end" }}
+                      >
+                        ⚡ Terbitkan
                       </button>
                     </div>
                   </form>
@@ -1055,7 +1261,9 @@ export default function PortalModal({
                         <tbody>
                           {filteredLicenses.map((lic) => (
                             <tr key={lic.key}>
-                              <td className="mono" style={{ fontWeight: 800 }}>{lic.key}</td>
+                              <td className="mono" style={{ fontWeight: 800 }}>
+                                {lic.key}
+                              </td>
                               <td>{lic.planName}</td>
                               <td>
                                 <span className={`badge status-${lic.status}`}>
@@ -1106,7 +1314,9 @@ export default function PortalModal({
                     </div>
                   </div>
                 </>
-              ) : (
+              )}
+
+              {adminSection === "users" && (
                 <>
                   <form className="subcard" onSubmit={handleAdminCreateAccount}>
                     <h3 className="px" style={{ marginTop: 0, fontSize: 20 }}>

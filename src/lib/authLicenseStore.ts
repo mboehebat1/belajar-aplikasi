@@ -1,6 +1,24 @@
 export type UserRole = "admin" | "guru";
 export type PlanType = "free" | "pro";
 export type LicenseStatus = "available" | "active" | "revoked";
+export type LicenseRequestStatus = "pending" | "approved" | "rejected";
+
+export interface LicenseRequestRecord {
+  id: string;
+  userEmail: string;
+  userName: string;
+  institution: string;
+  packageId: string;
+  packageName: string;
+  durationDays: number;
+  note: string;
+  status: LicenseRequestStatus;
+  adminNote: string;
+  approvedLicenseKey: string | null;
+  reviewedBy: string | null;
+  reviewedAt: string | null;
+  createdAt: string;
+}
 
 export interface UserAccount {
   id: string;
@@ -76,6 +94,7 @@ export const LICENSE_PACKAGES: LicensePackageOption[] = [
 
 const USERS_KEY = "zuperfarm_users_v1";
 const LICENSES_KEY = "zuperfarm_licenses_v1";
+const LICENSE_REQUESTS_KEY = "zuperfarm_license_requests_v1";
 const SESSION_KEY = "zuperfarm_session_v1";
 
 function fallbackHash(input: string): string {
@@ -187,12 +206,7 @@ export async function ensureSeeded(): Promise<void> {
 
   const now = new Date().toISOString();
   const adminSalt = "seed_admin_salt_2026";
-  const guruSalt = "seed_guru_salt_2026";
-
-  const [adminHash, guruHash] = await Promise.all([
-    hashPassword("admin123", adminSalt),
-    hashPassword("guru123", guruSalt),
-  ]);
+  const adminHash = await hashPassword("admin123", adminSalt);
 
   const seedUsers: UserAccount[] = [
     {
@@ -207,20 +221,6 @@ export async function ensureSeeded(): Promise<void> {
       licenseKey: "ZFARM-PRO-ADMIN-0001",
       licenseActivatedAt: now,
       licenseExpiresAt: addDays(now, 3650),
-      createdAt: now,
-    },
-    {
-      id: "usr_guru_demo",
-      name: "Budi Santoso, S.Pd.",
-      email: "guru@zuperfarm.local",
-      institution: "SDN Nusantara 01",
-      role: "guru",
-      passwordHash: guruHash,
-      salt: guruSalt,
-      plan: "free",
-      licenseKey: null,
-      licenseActivatedAt: null,
-      licenseExpiresAt: null,
       createdAt: now,
     },
   ];
@@ -238,54 +238,6 @@ export async function ensureSeeded(): Promise<void> {
       activatedAt: now,
       expiresAt: addDays(now, 3650),
     },
-    {
-      key: "ZFARM-PRO-2026-8801",
-      planName: "Pro Tahunan (1 Tahun)",
-      durationDays: 365,
-      status: "available",
-      createdAt: now,
-      createdBy: "admin@zuperfarm.local",
-      note: "Kode lisensi siap pakai #1",
-      activatedByEmail: null,
-      activatedAt: null,
-      expiresAt: null,
-    },
-    {
-      key: "ZFARM-PRO-2026-8802",
-      planName: "Pro Tahunan (1 Tahun)",
-      durationDays: 365,
-      status: "available",
-      createdAt: now,
-      createdBy: "admin@zuperfarm.local",
-      note: "Kode lisensi siap pakai #2",
-      activatedByEmail: null,
-      activatedAt: null,
-      expiresAt: null,
-    },
-    {
-      key: "ZFARM-TRL-2026-0030",
-      planName: "Trial Pro (30 Hari)",
-      durationDays: 30,
-      status: "available",
-      createdAt: now,
-      createdBy: "admin@zuperfarm.local",
-      note: "Kode uji coba 30 hari",
-      activatedByEmail: null,
-      activatedAt: null,
-      expiresAt: null,
-    },
-    {
-      key: "ZFARM-SCH-2026-9901",
-      planName: "Pro Sekolah (2 Tahun)",
-      durationDays: 730,
-      status: "available",
-      createdAt: now,
-      createdBy: "admin@zuperfarm.local",
-      note: "Kode lisensi sekolah 2 tahun",
-      activatedByEmail: null,
-      activatedAt: null,
-      expiresAt: null,
-    },
   ];
 
   if (existingUsers.length === 0) {
@@ -299,6 +251,7 @@ export async function ensureSeeded(): Promise<void> {
 export async function resetAllData(): Promise<void> {
   localStorage.removeItem(USERS_KEY);
   localStorage.removeItem(LICENSES_KEY);
+  localStorage.removeItem(LICENSE_REQUESTS_KEY);
   localStorage.removeItem(SESSION_KEY);
   await ensureSeeded();
 }
@@ -602,6 +555,110 @@ export function adminDowngradeUser(targetEmail: string): { ok: true } | { ok: fa
     writeJson(USERS_KEY, users);
   }
   return { ok: true };
+}
+
+export function listLicenseRequests(): LicenseRequestRecord[] {
+  const list = readJson<LicenseRequestRecord[]>(LICENSE_REQUESTS_KEY, []);
+  return [...list].sort((a, b) => {
+    if (a.status === "pending" && b.status !== "pending") return -1;
+    if (a.status !== "pending" && b.status === "pending") return 1;
+    return b.createdAt.localeCompare(a.createdAt);
+  });
+}
+
+export function submitLicenseRequest(params: {
+  email: string;
+  packageId: string;
+  note: string;
+}): { ok: true; request: LicenseRequestRecord } | { ok: false; error: string } {
+  const email = params.email.trim().toLowerCase();
+  const users = listUsers();
+  const user = users.find((u) => u.email === email);
+  if (!user) {
+    return { ok: false, error: "Silakan masuk akun guru terlebih dahulu." };
+  }
+  const existing = listLicenseRequests();
+  if (existing.some((r) => r.userEmail === email && r.status === "pending")) {
+    return {
+      ok: false,
+      error: "Anda masih memiliki pengajuan lisensi yang menunggu persetujuan Admin.",
+    };
+  }
+  const pkg = LICENSE_PACKAGES.find((p) => p.id === params.packageId) ?? LICENSE_PACKAGES[2];
+  const record: LicenseRequestRecord = {
+    id: generateId("req"),
+    userEmail: user.email,
+    userName: user.name,
+    institution: user.institution,
+    packageId: pkg.id,
+    packageName: pkg.name,
+    durationDays: pkg.durationDays,
+    note: params.note.trim().slice(0, 300),
+    status: "pending",
+    adminNote: "",
+    approvedLicenseKey: null,
+    reviewedBy: null,
+    reviewedAt: null,
+    createdAt: new Date().toISOString(),
+  };
+  writeJson(LICENSE_REQUESTS_KEY, [record, ...existing]);
+  return { ok: true, request: record };
+}
+
+export function approveLicenseRequest(params: {
+  requestId: string;
+  adminEmail: string;
+  adminNote?: string;
+}): { ok: true; request: LicenseRequestRecord; licenseKey: string } | { ok: false; error: string } {
+  const requests = readJson<LicenseRequestRecord[]>(LICENSE_REQUESTS_KEY, []);
+  const idx = requests.findIndex((r) => r.id === params.requestId);
+  if (idx === -1) return { ok: false, error: "Permintaan lisensi tidak ditemukan." };
+  const req = requests[idx];
+  if (req.status !== "pending") {
+    return { ok: false, error: "Permintaan ini sudah diproses sebelumnya." };
+  }
+
+  const assigned = adminAssignProToUser({
+    targetEmail: req.userEmail,
+    adminEmail: params.adminEmail,
+    packageId: req.packageId,
+  });
+  if (!assigned.ok) return { ok: false, error: assigned.error };
+
+  const updated: LicenseRequestRecord = {
+    ...req,
+    status: "approved",
+    adminNote: (params.adminNote ?? "").trim() || "Disetujui oleh Admin",
+    approvedLicenseKey: assigned.license.key,
+    reviewedBy: params.adminEmail,
+    reviewedAt: new Date().toISOString(),
+  };
+  requests[idx] = updated;
+  writeJson(LICENSE_REQUESTS_KEY, requests);
+  return { ok: true, request: updated, licenseKey: assigned.license.key };
+}
+
+export function rejectLicenseRequest(params: {
+  requestId: string;
+  adminEmail: string;
+  adminNote?: string;
+}): { ok: true; request: LicenseRequestRecord } | { ok: false; error: string } {
+  const requests = readJson<LicenseRequestRecord[]>(LICENSE_REQUESTS_KEY, []);
+  const idx = requests.findIndex((r) => r.id === params.requestId);
+  if (idx === -1) return { ok: false, error: "Permintaan lisensi tidak ditemukan." };
+  if (requests[idx].status !== "pending") {
+    return { ok: false, error: "Permintaan ini sudah diproses sebelumnya." };
+  }
+  const updated: LicenseRequestRecord = {
+    ...requests[idx],
+    status: "rejected",
+    adminNote: (params.adminNote ?? "").trim() || "Ditolak oleh Admin",
+    reviewedBy: params.adminEmail,
+    reviewedAt: new Date().toISOString(),
+  };
+  requests[idx] = updated;
+  writeJson(LICENSE_REQUESTS_KEY, requests);
+  return { ok: true, request: updated };
 }
 
 export function buildLicenseCertificateText(user: UserAccount): string {

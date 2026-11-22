@@ -64,7 +64,7 @@ const proPlan = [
 const faqs = [
   ["Apakah bisa dimainkan 30 murid sekaligus?", <>Bisa! Aplikasi ini dirancang mendukung <b>30 hingga 100 murid bersamaan</b> dalam satu sesi melalui API Vercel + database PostgreSQL. Cukup tambahkan variabel <code>DATABASE_URL</code> (mis. Neon Postgres) di pengaturan Vercel untuk sinkronisasi lintas HP/laptop.</>],
   ["Bagaimana murid masuk ke sesi?", <>Guru membagikan <b>kode 6 angka</b> atau <b>link join</b> (<code>?join=123456</code>). Murid cukup mengetik nama dan memilih karakter, lalu langsung masuk lobby tanpa perlu akun.</>],
-  ["Bagaimana cara membuka fitur Buat Kelas (Pro)?", <>Masuk menggunakan akun Pro (mis. <code>admin@zuperfarm.local</code> / <code>admin123</code>) atau daftar akun guru baru lalu aktifkan kode lisensi yang tersedia di menu <b>🔑 Lisensi</b>. Setelah Pro aktif, fitur <b>Buat Kelas &amp; Mabar</b> langsung terbuka!</>],
+  ["Bagaimana cara membuka fitur Buat Kelas (Pro)?", <>Daftar atau masuk akun guru, lalu kirim <b>pengajuan lisensi Pro</b> melalui menu <b>🔑 Lisensi</b> (atau masukkan kode lisensi resmi dari Admin). Setelah <b>disetujui oleh Admin</b>, akun otomatis aktif sebagai Pro dan fitur Buat Kelas &amp; Mabar langsung terbuka!</>],
   ["Bisakah dipakai untuk ulangan / asesmen?", <>Bisa. Pilih mode <b>Asesmen</b> saat membuka ruang. Tiap soal dijawab sekali, kunci disembunyikan selama pengerjaan, dan nilai serta status KKM otomatis direkap untuk diunduh ke Excel (CSV).</>],
   ["Bagaimana cara mengaktifkan mode database lintas perangkat di Vercel?", <>Buat database PostgreSQL gratis (mis. di Neon), salin connection string-nya ke Environment Variable <code>DATABASE_URL</code> di project Vercel <code>belajar-aplikasi</code>, lalu redeploy. Tabel database akan dibuat otomatis saat pertama kali dibuka.</>],
 ];
@@ -380,7 +380,7 @@ export default function App() {
               </ul>
               <div style={{ marginTop: 14, display: "flex", gap: 8, flexWrap: "wrap" }}>
                 <button type="button" className="btn g" onClick={() => openPortal("lisensi")}>
-                  🔑 Aktivasi / Buat Lisensi
+                  📩 Ajukan Lisensi Pro
                 </button>
                 <button type="button" className="btn b" onClick={() => openWorkspace("classes")}>
                   🏫 Buka Kelas Pro
@@ -392,16 +392,16 @@ export default function App() {
           <h3 className="px" style={{ textAlign: "center", fontSize: 24, marginTop: 34 }}>Cara aktivasi Pro</h3>
           <div className="steps">
             <div className="wood">
-              <b>Buat / Ambil lisensi</b><br />
-              melalui <button type="button" className="link-btn" onClick={() => openPortal("lisensi")}>halaman lisensi</button>.
-            </div>
-            <div className="wood">
               <b>Daftar / Masuk akun guru</b><br />
               di <button type="button" className="link-btn" onClick={() => openPortal("akun")}>portal akun guru</button>.
             </div>
             <div className="wood">
-              <b>Masukkan kode lisensi</b><br />
-              di Dashboard Akun atau kelola via <button type="button" className="link-btn" onClick={() => openPortal("admin")}>Panel Admin</button>.
+              <b>Ajukan lisensi Pro</b><br />
+              pilih paket di <button type="button" className="link-btn" onClick={() => openPortal("lisensi")}>halaman lisensi</button>.
+            </div>
+            <div className="wood">
+              <b>Persetujuan Admin</b><br />
+              Admin meninjau pengajuan &amp; menyetujui aktivasi lisensi Anda.
             </div>
             <div className="wood">
               <b>Langsung Buat Kelas!</b><br />
@@ -462,12 +462,16 @@ export default function App() {
             </button>{" "}
             ·{" "}
             <button type="button" className="footer-link" onClick={() => openPortal("lisensi")}>
-              🔑 Aktivasi Lisensi
-            </button>{" "}
-            ·{" "}
-            <button type="button" className="footer-link" onClick={() => openPortal("admin")}>
-              👑 Panel Admin
+              🔑 Pengajuan Lisensi
             </button>
+            {currentUser?.role === "admin" && (
+              <>
+                {" "}·{" "}
+                <button type="button" className="footer-link" onClick={() => openPortal("admin")}>
+                  👑 Panel Admin
+                </button>
+              </>
+            )}
           </p>
         </div>
       </footer>
